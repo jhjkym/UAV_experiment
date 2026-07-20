@@ -1,0 +1,22 @@
+<launch>
+  <arg name="state_topic" default="/mavros/state" />
+  <arg name="odom_topic" default="/mavros/local_position/odom" />
+  <arg name="imu_topic" default="/mavros/imu/data" />
+  <arg name="uav_state_topic" default="/uav/state" />
+  <arg name="odom_timeout" default="0.5" />
+  <arg name="publish_rate" default="30.0" />
+  <arg name="subscribe_imu" default="false" />
+
+  <node pkg="uav_px4_bridge"
+        type="mavros_state_bridge_node"
+        name="mavros_state_bridge_node"
+        output="screen">
+    <param name="state_topic" value="$(arg state_topic)" />
+    <param name="odom_topic" value="$(arg odom_topic)" />
+    <param name="imu_topic" value="$(arg imu_topic)" />
+    <param name="uav_state_topic" value="$(arg uav_state_topic)" />
+    <param name="odom_timeout" value="$(arg odom_timeout)" />
+    <param name="publish_rate" value="$(arg publish_rate)" />
+    <param name="subscribe_imu" value="$(arg subscribe_imu)" />
+  </node>
+</launch>

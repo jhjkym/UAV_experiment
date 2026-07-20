@@ -1,0 +1,6 @@
+world_frame: map
+body_frame: base_link
+algorithm_world_convention: ENU
+algorithm_body_convention: FLU
+px4_world_convention: NED
+px4_body_convention: FRD

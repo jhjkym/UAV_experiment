@@ -1,0 +1,17 @@
+<launch>
+  <node pkg="uav_px4_bridge"
+        type="mavros_state_bridge_node"
+        name="mavros_state_bridge_node"
+        output="screen">
+    <param name="state_topic" value="/test/mavros/state" />
+    <param name="odom_topic" value="/test/mavros/local_position/odom" />
+    <param name="uav_state_topic" value="/test/uav/state" />
+    <param name="odom_timeout" value="0.35" />
+    <param name="publish_rate" value="20.0" />
+  </node>
+
+  <test test-name="test_state_bridge_integration"
+        pkg="uav_px4_bridge"
+        type="test_state_bridge_integration.py"
+        time-limit="10.0" />
+</launch>
