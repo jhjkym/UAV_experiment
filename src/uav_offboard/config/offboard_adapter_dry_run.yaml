@@ -1,0 +1,12 @@
+publish_rate_hz: 30.0
+preview_timeout_sec: 0.2
+state_timeout_sec: 0.2
+allow_mavros_output: false
+setpoint_preview_topic: /uav/setpoint_preview
+uav_state_topic: /uav/state
+mavros_state_topic: /mavros/state
+target_preview_topic: /uav/mavros_target_preview
+offboard_status_topic: /uav/offboard_status
+mavros_output_topic: /mavros/setpoint_raw/local
+supported_frames:
+  - map

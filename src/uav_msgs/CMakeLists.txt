@@ -13,6 +13,7 @@ add_message_files(
   TrajectoryPoint.msg
   Trajectory.msg
   SetpointPreview.msg
+  OffboardStatus.msg
   PredictedState.msg
   DynamicObstacle.msg
   DynamicObstacleArray.msg

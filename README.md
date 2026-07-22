@@ -4,7 +4,7 @@ ROS 1 Noetic catkin workspace for the thesis project:
 
 `不确定动静态混合环境下四旋翼无人机感知、规划与安全控制方法研究`
 
-This repository is currently in M0-C2: read-only trajectory preview.
+This repository is currently in M0-C3: dry-run offboard setpoint adaptation.
 
 Current scope:
 - WSL 2 Ubuntu 20.04 development environment.
@@ -35,6 +35,14 @@ M0-C2 adds:
 - Unit and ROS integration tests for Hermite interpolation, yaw wraparound,
   cache replacement, preview publication, and control-boundary checks.
 
+M0-C3 adds:
+- `uav_offboard` dry-run MAVROS `PositionTarget` adapter.
+- Double output gates: static `allow_mavros_output=false` by default plus a
+  runtime `SetBool` gate.
+- `/uav/mavros_target_preview` and `/uav/offboard_status` diagnostics.
+- Test-only remapped output validation without PX4, arming, mode switching, or
+  takeoff.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash
@@ -45,8 +53,9 @@ catkin run_tests
 catkin_test_results build
 ```
 
-This stage does not provide flight capability and does not publish MAVROS
-control setpoints. `/uav/setpoint_preview` is not a MAVROS command topic.
+This stage does not provide flight capability. The normal launch does not
+publish real MAVROS control setpoints. `/uav/setpoint_preview` and
+`/uav/mavros_target_preview` are not flight commands.
 
 M0-C1 does not clone or vendor PX4-Autopilot into this repository. PX4 should be
 kept as external source, for example `/home/tom/third_party/PX4-Autopilot`.

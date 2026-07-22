@@ -1,0 +1,23 @@
+<launch>
+  <node pkg="uav_offboard"
+        type="offboard_adapter_node"
+        name="offboard_adapter_node"
+        output="screen">
+    <param name="allow_mavros_output" value="true" />
+    <param name="publish_rate_hz" value="30.0" />
+    <param name="preview_timeout_sec" value="0.5" />
+    <param name="state_timeout_sec" value="0.5" />
+    <param name="setpoint_preview_topic" value="/test/uav/setpoint_preview" />
+    <param name="uav_state_topic" value="/test/uav/state" />
+    <param name="mavros_state_topic" value="/test/mavros/state" />
+    <param name="target_preview_topic" value="/test/uav/mavros_target_preview" />
+    <param name="offboard_status_topic" value="/test/uav/offboard_status" />
+    <param name="mavros_output_topic" value="/test/mavros/setpoint_raw/local" />
+    <rosparam param="supported_frames">[map]</rosparam>
+  </node>
+
+  <test test-name="test_offboard_adapter_output_gate"
+        pkg="uav_offboard"
+        type="test_offboard_adapter_output_gate.py"
+        time-limit="30.0" />
+</launch>

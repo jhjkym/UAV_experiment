@@ -1,0 +1,11 @@
+<launch>
+  <arg name="config_file" default="$(find uav_offboard)/config/offboard_adapter_dry_run.yaml" />
+
+  <node pkg="uav_offboard"
+        type="offboard_adapter_node"
+        name="offboard_adapter_node"
+        output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="allow_mavros_output" value="false" />
+  </node>
+</launch>

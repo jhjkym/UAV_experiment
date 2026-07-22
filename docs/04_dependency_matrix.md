@@ -19,6 +19,7 @@ Repository package policy:
 |---|---:|---:|
 | `uav_msgs` | No | No |
 | `uav_px4_bridge` | Yes, in later stages | No |
+| `uav_offboard` | Yes, for `mavros_msgs/PositionTarget` and `mavros_msgs/State` | No |
 | `uav_bringup` | Yes, in hardware-specific launch files later | Yes, only in simulation launch files later |
 | Future perception/planning/control packages | No | No |
 | Future simulation package | No MAVROS requirement | Yes |

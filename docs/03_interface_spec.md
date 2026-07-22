@@ -65,6 +65,29 @@ Trajectory frame semantics:
 - Algorithm-layer trajectory data remains ENU/FLU.
 - PX4 NED/FRD conversion is reserved for a later MAVROS output adapter.
 
+M0-C3 adds a dry-run offboard adapter:
+
+```text
+/uav/setpoint_preview
+/uav/state
+/mavros/state
+        |
+        v
+offboard_adapter_node
+        |
+        +--> /uav/mavros_target_preview  (mavros_msgs/PositionTarget)
+        +--> /uav/offboard_status        (uav_msgs/OffboardStatus)
+```
+
+The adapter converts preview points to `mavros_msgs/PositionTarget` without
+performing an extra ENU/NED or FLU/FRD conversion. The normal launch has
+`allow_mavros_output=false`, so no real `/mavros/setpoint_raw/local` publisher
+is created. Test launches may remap the MAVROS output topic to
+`/test/mavros/setpoint_raw/local`.
+
+`PositionTarget.header.stamp` is the adapter publish time. The input preview
+stamp is checked for freshness before any output gate can open.
+
 MAVROS state bridge:
 
 ```text
