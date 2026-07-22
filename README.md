@@ -4,7 +4,7 @@ ROS 1 Noetic catkin workspace for the thesis project:
 
 `不确定动静态混合环境下四旋翼无人机感知、规划与安全控制方法研究`
 
-This repository is currently in M0-B: engineering skeleton construction.
+This repository is currently in M0-C2: read-only trajectory preview.
 
 Current scope:
 - WSL 2 Ubuntu 20.04 development environment.
@@ -27,6 +27,14 @@ M0-C1 adds:
   `/uav/state`.
 - Unit and ROS integration tests for state mapping and timeout behavior.
 
+M0-C2 adds:
+- `uav_trajectory` trajectory validation, buffering, and time-based preview.
+- `uav_msgs/SetpointPreview` for sampled algorithm-layer setpoint previews.
+- `/uav/trajectory` to `/uav/setpoint_preview` sampling at a configurable
+  default of 30 Hz.
+- Unit and ROS integration tests for Hermite interpolation, yaw wraparound,
+  cache replacement, preview publication, and control-boundary checks.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash
@@ -38,7 +46,7 @@ catkin_test_results build
 ```
 
 This stage does not provide flight capability and does not publish MAVROS
-control setpoints.
+control setpoints. `/uav/setpoint_preview` is not a MAVROS command topic.
 
 M0-C1 does not clone or vendor PX4-Autopilot into this repository. PX4 should be
 kept as external source, for example `/home/tom/third_party/PX4-Autopilot`.

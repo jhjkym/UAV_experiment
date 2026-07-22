@@ -1,0 +1,8 @@
+trajectory_topic: /uav/trajectory
+preview_topic: /uav/setpoint_preview
+uav_state_topic: /uav/state
+subscribe_uav_state: true
+publish_rate: 30.0
+state_timeout: 0.5
+supported_frames:
+  - map

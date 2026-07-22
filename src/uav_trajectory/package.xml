@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>uav_trajectory</name>
+  <version>0.0.1</version>
+  <description>Time-parameterized trajectory validation, buffering, and read-only setpoint preview.</description>
+
+  <maintainer email="tom@example.com">tom</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>rostest</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>uav_msgs</build_depend>
+
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>uav_msgs</exec_depend>
+
+  <test_depend>rostest</test_depend>
+  <test_depend>rospy</test_depend>
+</package>

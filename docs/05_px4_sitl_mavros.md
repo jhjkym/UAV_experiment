@@ -10,18 +10,15 @@ M0-C1 goal:
 
 ## Version Baseline
 
-Recommended PX4 baseline:
+Frozen PX4 baseline:
 - PX4-Autopilot tag: `v1.14.3`.
-- Short tag commit observed from public tag index: `1dacb4c`.
-- Full commit must be verified after clone:
-
-```bash
-git -C /home/tom/third_party/PX4-Autopilot rev-parse v1.14.3^{commit}
-```
+- PX4-Autopilot commit:
+  `1dacb4cdef2d7145754fc788fa8dc482eed74b40`.
 
 Installed development stack:
 - Ubuntu 20.04 in WSL 2.
 - ROS 1 Noetic.
+- Python: `/usr/bin/python3`, Python 3.8.10.
 - MAVROS 1.20.1.
 - Gazebo Classic 11.15.1.
 - gazebo_ros 2.9.3.
@@ -136,6 +133,81 @@ The bridge:
 - Sets zero acceleration and `acceleration_valid=false`.
 - Does not repeat ENU/NED conversion on standard MAVROS odometry.
 - Marks pose and twist invalid after an odometry timeout.
+
+## M0-C1 Measured Validation
+
+Measured read-only validation was run with:
+
+```bash
+cd /home/tom/third_party/PX4-Autopilot
+conda deactivate 2>/dev/null || true
+unset PYTHONHOME
+HEADLESS=1 make px4_sitl gazebo-classic
+```
+
+The project-side launches were:
+
+```bash
+source scripts/env/ros_noetic_wsl.bash
+source devel/setup.bash
+roslaunch "$(rospack find uav_bringup)/launch/sim/mavros_sitl.launch"
+roslaunch "$(rospack find uav_bringup)/launch/sim/state_bridge_sitl.launch"
+```
+
+Measured connection state:
+- `/mavros/state.connected=true`.
+- `/mavros/state.armed=false`.
+- `/mavros/state.mode=AUTO.LOITER`.
+- No OFFBOARD, arming, takeoff, or PX4 parameter write was executed.
+
+Measured frames:
+- `/mavros/local_position/odom.header.frame_id=map`.
+- `/mavros/local_position/odom.child_frame_id=base_link`.
+- `/uav/state.header.frame_id=map`.
+- MAVROS provides the standard ROS-side local position convention; the state
+  bridge does not perform a second ENU/NED or FLU/FRD conversion.
+
+Measured topic rates:
+- `/mavros/local_position/odom`: average 29.984 Hz, min 0.028 s, max 0.037 s,
+  standard deviation 0.00190 s, window 500.
+- `/uav/state`: average 28.295 Hz, min 0.000 s, max 1.071 s, standard
+  deviation 0.04638 s, window 501. Early samples were at 30 Hz; one transient
+  sampling gap was observed during the validation window.
+
+Measured `/mavros/local_position/odom` sample summary:
+- Header stamp was non-zero: `1784732479.803950811`.
+- Position was finite: approximately `(0.0073, -0.0163, -0.1274)`.
+- Orientation was finite and not all zero:
+  approximately `(0.0080, -0.0104, 0.0267, -0.9996)`.
+- Linear and angular velocity fields were finite.
+
+Measured `/uav/state` sample summary:
+- Header stamp was non-zero and preserved MAVROS odometry time semantics:
+  `1784732480.735598551`.
+- Frame was `map`.
+- `pose_valid=true`.
+- `twist_valid=true`.
+- `acceleration_valid=false`.
+- Acceleration was the explicit invalid placeholder `(0.0, 0.0, 0.0)`.
+- Position, orientation, and velocity fields were finite.
+
+Measured timeout behavior:
+- The configured odometry timeout was `0.5` s.
+- After stopping only the MAVROS launch that supplied odometry, the state
+  bridge kept running and published `/uav/state` with `pose_valid=false`,
+  `twist_valid=false`, and `acceleration_valid=false`.
+- After restarting MAVROS, `/mavros/state.connected=true`,
+  `/mavros/state.armed=false`, and `/uav/state` recovered to
+  `pose_valid=true`, `twist_valid=true`, `acceleration_valid=false`.
+
+Measured control boundary:
+- `/mavros/setpoint_raw/local`: no publishers.
+- `/mavros/setpoint_position/local`: no publishers.
+- `/mavros/setpoint_raw/attitude`: no publishers.
+- `/mavros/setpoint_velocity/cmd_vel`: no publishers.
+- Source search under `src/uav_px4_bridge` and `src/uav_bringup` found only
+  MAVROS plugin configuration keys for setpoint plugins, not project runtime
+  publishers or service clients.
 
 ## Verification Commands
 

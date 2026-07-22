@@ -12,6 +12,7 @@ add_message_files(
   UavState.msg
   TrajectoryPoint.msg
   Trajectory.msg
+  SetpointPreview.msg
   PredictedState.msg
   DynamicObstacle.msg
   DynamicObstacleArray.msg

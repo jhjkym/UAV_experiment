@@ -37,6 +37,34 @@ must not be published directly as a one-shot command to
 M0-B does not implement the trajectory buffer, sampler, or MAVROS setpoint
 publisher.
 
+M0-C2 implements only the read-only trajectory buffer and preview sampler:
+
+```text
+uav_msgs/Trajectory
+        |
+        v
+trajectory_preview_node
+        |
+        v
+/uav/setpoint_preview  (uav_msgs/SetpointPreview)
+```
+
+`/uav/setpoint_preview` is an algorithm-layer preview. It is not a MAVROS
+setpoint stream and must not be remapped to `/mavros/setpoint_*`.
+
+Trajectory time semantics:
+- `Trajectory.header.stamp` is the execution start time in ROS time.
+- `TrajectoryPoint.time_from_start` is relative to `Trajectory.header.stamp`.
+- Before start, the preview holds the first point and reports
+  `started=false`.
+- After the final point, the preview holds the last point and reports
+  `finished=true`.
+
+Trajectory frame semantics:
+- M0-C2 accepts `map` by default.
+- Algorithm-layer trajectory data remains ENU/FLU.
+- PX4 NED/FRD conversion is reserved for a later MAVROS output adapter.
+
 MAVROS state bridge:
 
 ```text

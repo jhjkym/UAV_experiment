@@ -1,0 +1,10 @@
+<launch>
+  <arg name="config_file" default="$(find uav_trajectory)/config/trajectory_preview.yaml" />
+
+  <node pkg="uav_trajectory"
+        type="trajectory_preview_node"
+        name="trajectory_preview_node"
+        output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
+</launch>
