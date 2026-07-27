@@ -4,7 +4,8 @@ ROS 1 Noetic catkin workspace for the thesis project:
 
 `不确定动静态混合环境下四旋翼无人机感知、规划与安全控制方法研究`
 
-This repository is currently in M0-C3: dry-run offboard setpoint adaptation.
+This repository is currently in M0-C4: PX4 SITL-only manually authorized
+OFFBOARD hover validation.
 
 Current scope:
 - WSL 2 Ubuntu 20.04 development environment.
@@ -43,6 +44,17 @@ M0-C3 adds:
 - Test-only remapped output validation without PX4, arming, mode switching, or
   takeoff.
 
+M0-C4 adds:
+- A SITL-only experiment script for manually authorized OFFBOARD hover.
+- A C4 launch that connects the existing state bridge, trajectory preview, and
+  offboard adapter to the real SITL `/mavros/setpoint_raw/local` stream.
+- Runtime checks that reject execution unless `UAV_ALLOW_SITL_FLIGHT=YES`,
+  PX4 is the local SITL binary, MAVROS uses UDP, and the vehicle is connected
+  and disarmed before control.
+- Bag and log recording under `/tmp/uav_m0c4/`.
+- Validated PX4 SITL OFFBOARD rise, 15 second hover, `AUTO.LAND`, and final
+  disarmed state in `/tmp/uav_m0c4/run_20260727_190516`.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash
@@ -53,9 +65,10 @@ catkin run_tests
 catkin_test_results build
 ```
 
-This stage does not provide flight capability. The normal launch does not
-publish real MAVROS control setpoints. `/uav/setpoint_preview` and
-`/uav/mavros_target_preview` are not flight commands.
+Normal development and test launches do not provide flight capability and do
+not publish real MAVROS control setpoints. M0-C4 flight validation is a separate
+PX4 SITL-only experiment path guarded by `UAV_ALLOW_SITL_FLIGHT=YES`; it must
+not be used with real flight hardware.
 
 M0-C1 does not clone or vendor PX4-Autopilot into this repository. PX4 should be
 kept as external source, for example `/home/tom/third_party/PX4-Autopilot`.

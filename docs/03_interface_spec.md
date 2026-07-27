@@ -88,6 +88,31 @@ is created. Test launches may remap the MAVROS output topic to
 `PositionTarget.header.stamp` is the adapter publish time. The input preview
 stamp is checked for freshness before any output gate can open.
 
+M0-C4 uses the same interfaces for a PX4 SITL-only hover experiment:
+
+```text
+/uav/trajectory
+        |
+        v
+trajectory_preview_node
+        |
+        v
+/uav/setpoint_preview
+        |
+        v
+offboard_adapter_node
+        |
+        v
+/mavros/setpoint_raw/local
+```
+
+The real MAVROS setpoint stream is enabled only by the C4 experiment launch and
+only after the experiment script has checked `UAV_ALLOW_SITL_FLIGHT=YES`, PX4
+SITL process identity, UDP MAVROS configuration, MAVROS connection, and
+disarmed state. The adapter still does not arm, call `set_mode`, take off, land,
+or modify PX4 parameters. Those calls are limited to the explicit C4 SITL
+experiment script.
+
 MAVROS state bridge:
 
 ```text

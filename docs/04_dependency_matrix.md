@@ -49,3 +49,32 @@ M0-C1 measured read-only link:
   marked invalid; after restarting MAVROS, both recover to valid.
 - Control boundary: no project node published MAVROS setpoint topics, and no
   arming, mode switch, takeoff, or PX4 parameter write was executed.
+
+M0-C4 SITL hover baseline:
+- PX4 tag: `v1.14.3`.
+- PX4 commit: `1dacb4cdef2d7145754fc788fa8dc482eed74b40`.
+- SITL command: `HEADLESS=1 make px4_sitl gazebo-classic`.
+- MAVROS FCU URL policy: UDP SITL URL only, default
+  `udp://:14540@127.0.0.1:14557`; `serial://` and `/dev/tty*` are rejected.
+- Control permission: the experiment script refuses to run unless
+  `UAV_ALLOW_SITL_FLIGHT=YES`.
+- Data policy: bags and logs are written under `/tmp/uav_m0c4/` and must not be
+  committed.
+- Passing run: `/tmp/uav_m0c4/run_20260727_190516`.
+- Prestream setpoint rate: about 30.008 Hz.
+- Real setpoint average rate during output: about 29.999 Hz.
+- OFFBOARD switch confirmation: about 1.004 s.
+- Arming confirmation: about 1.013 s.
+- Hover horizontal RMS error: about 0.068 m.
+- Maximum horizontal error: about 0.205 m.
+- Hover height RMS error: about 0.171 m.
+- Maximum altitude overshoot: about 0.059 m.
+- Maximum speed: about 0.838 m/s.
+- Landing to disarm: about 5.910 s.
+- Adapter FAULT: false.
+- Unexpected OFFBOARD exit: false.
+- NaN or Inf: false.
+- Final armed state: false.
+- Test note: sandboxed ROS logging and network interface discovery can be
+  restricted; tests pass with an independent temporary `ROS_HOME` under
+  `/tmp/uav_m0c4/ros_home`.

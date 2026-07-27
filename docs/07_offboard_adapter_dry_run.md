@@ -181,5 +181,8 @@ ROS integration tests cover:
   invalid, or MAVROS disconnects.
 - Absence of arming and `set_mode` service use.
 
-The next stage may validate PX4 SITL OFFBOARD hover, but M0-C3 does not perform
-flight validation.
+M0-C4 validates a PX4 SITL OFFBOARD hover through a separate experiment script.
+The adapter node itself remains unchanged in responsibility: it only adapts,
+gates, and publishes setpoints when both gates are open. It still does not call
+arming, `set_mode`, OFFBOARD, takeoff, landing, disarming, or parameter
+services.
