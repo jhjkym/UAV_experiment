@@ -55,6 +55,14 @@ M0-C4 adds:
 - Validated PX4 SITL OFFBOARD rise, 15 second hover, `AUTO.LAND`, and final
   disarmed state in `/tmp/uav_m0c4/run_20260727_190516`.
 
+M0-C5A adds:
+- Offline dynamic trajectory generation for smooth line, circle, and figure
+  eight patterns in ENU coordinates.
+- A read-only dynamic trajectory publisher and preview launch that do not start
+  PX4, Gazebo, MAVROS, OFFBOARD, arming, or landing.
+- Dynamic constraint validation with whole-trajectory time scaling.
+- Offline tracking metrics for CSV or structured JSON time series.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash

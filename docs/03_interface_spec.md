@@ -113,6 +113,25 @@ disarmed state. The adapter still does not arm, call `set_mode`, take off, land,
 or modify PX4 parameters. Those calls are limited to the explicit C4 SITL
 experiment script.
 
+M0-C5A adds dynamic trajectory generation before the existing preview node:
+
+```text
+dynamic_trajectory_publisher_node
+        |
+        v
+/uav/trajectory
+        |
+        v
+trajectory_preview_node
+        |
+        v
+/uav/setpoint_preview
+```
+
+The dynamic generator remains algorithm-layer only. It depends on `uav_msgs`
+and standard ROS message types, not `mavros_msgs`, and it does not publish any
+`/mavros/setpoint_*` topic or call flight-controller services.
+
 MAVROS state bridge:
 
 ```text

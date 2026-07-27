@@ -1,0 +1,123 @@
+#include <cmath>
+#include <stdexcept>
+#include <string>
+
+#include <ros/ros.h>
+#include <uav_msgs/Trajectory.h>
+
+#include "uav_trajectory/dynamic_trajectory_generator.hpp"
+
+namespace {
+
+class DynamicTrajectoryPublisherNode {
+ public:
+  DynamicTrajectoryPublisherNode(ros::NodeHandle nh, ros::NodeHandle private_nh)
+      : nh_(nh), private_nh_(private_nh) {
+    private_nh_.param<std::string>("trajectory_topic", trajectory_topic_, "/uav/trajectory");
+    private_nh_.param<bool>("publish_once", publish_once_, true);
+    private_nh_.param<double>("republish_rate_hz", republish_rate_hz_, 0.2);
+
+    uav_trajectory::DynamicTrajectoryConfig config;
+    std::string trajectory_type = "line";
+    std::string yaw_mode = "fixed";
+    private_nh_.param<std::string>("trajectory_type", trajectory_type, "line");
+    private_nh_.param<std::string>("frame_id", config.frame_id, "map");
+    private_nh_.param<double>("start_delay_sec", config.start_delay_sec, 2.0);
+    start_delay_sec_ = config.start_delay_sec;
+    private_nh_.param<double>("altitude_offset_m", config.altitude_offset_m, 1.0);
+    private_nh_.param<double>("duration_sec", config.duration_sec, 20.0);
+    private_nh_.param<double>("sample_period_sec", config.sample_period_sec, 0.05);
+    private_nh_.param<double>("hold_end_sec", config.hold_end_sec, 5.0);
+    private_nh_.param<std::string>("yaw_mode", yaw_mode, "fixed");
+    private_nh_.param<double>("line_length_m", config.line_length_m, 1.0);
+    private_nh_.param<double>("line_segment_duration_sec",
+                              config.line_segment_duration_sec, 5.0);
+    private_nh_.param<double>("circle_radius_m", config.circle_radius_m, 1.0);
+    private_nh_.param<double>("circle_tangent_speed_mps",
+                              config.circle_tangent_speed_mps, 0.5);
+    private_nh_.param<double>("transition_duration_sec",
+                              config.transition_duration_sec, 2.0);
+    private_nh_.param<double>("figure8_amplitude_x_m",
+                              config.figure8_amplitude_x_m, 1.0);
+    private_nh_.param<double>("figure8_amplitude_y_m",
+                              config.figure8_amplitude_y_m, 0.5);
+    private_nh_.param<double>("max_velocity_mps", config.max_velocity_mps, 1.0);
+    private_nh_.param<double>("max_acceleration_mps2",
+                              config.max_acceleration_mps2, 1.5);
+    private_nh_.param<double>("max_jerk_mps3", config.max_jerk_mps3, 4.0);
+    private_nh_.param<double>("low_speed_yaw_threshold_mps",
+                              config.low_speed_yaw_threshold_mps, 0.05);
+
+    uav_trajectory::StartPose start;
+    private_nh_.param<double>("start_x", start.x, 0.0);
+    private_nh_.param<double>("start_y", start.y, 0.0);
+    private_nh_.param<double>("start_z", start.z, 0.0);
+    private_nh_.param<double>("start_yaw", start.yaw, 0.0);
+
+    if (!uav_trajectory::parseTrajectoryType(trajectory_type, &config.trajectory_type)) {
+      ROS_FATAL("Invalid trajectory_type '%s'", trajectory_type.c_str());
+      throw std::runtime_error("invalid trajectory_type");
+    }
+    if (!uav_trajectory::parseYawMode(yaw_mode, &config.yaw_mode)) {
+      ROS_FATAL("Invalid yaw_mode '%s'", yaw_mode.c_str());
+      throw std::runtime_error("invalid yaw_mode");
+    }
+
+    const auto result = uav_trajectory::generateDynamicTrajectory(config, start);
+    if (!result.valid) {
+      ROS_FATAL("Failed to generate dynamic trajectory: %s", result.reason.c_str());
+      throw std::runtime_error(result.reason);
+    }
+    trajectory_ = result.trajectory;
+    trace_id_ = result.trace_id;
+
+    publisher_ = nh_.advertise<uav_msgs::Trajectory>(trajectory_topic_, 1, true);
+    const double rate = std::isfinite(republish_rate_hz_) && republish_rate_hz_ > 0.0
+                            ? republish_rate_hz_
+                            : 0.2;
+    timer_ = nh_.createTimer(ros::Duration(1.0 / rate),
+                             &DynamicTrajectoryPublisherNode::timerCallback, this,
+                             false, true);
+
+    ROS_INFO("dynamic_trajectory_publisher_node generated %s id=%u points=%zu "
+             "time_scale=%.3f max_v=%.3f max_a=%.3f max_j=%.3f topic=%s",
+             trace_id_.c_str(), trajectory_.trajectory_id, trajectory_.points.size(),
+             result.time_scale, result.measured.max_velocity_mps,
+             result.measured.max_acceleration_mps2, result.measured.max_jerk_mps3,
+             trajectory_topic_.c_str());
+  }
+
+ private:
+  void timerCallback(const ros::TimerEvent&) {
+    trajectory_.header.stamp = ros::Time::now() + ros::Duration(start_delay_sec_);
+    publisher_.publish(trajectory_);
+    if (publish_once_) {
+      timer_.stop();
+    }
+  }
+
+  ros::NodeHandle nh_;
+  ros::NodeHandle private_nh_;
+  ros::Publisher publisher_;
+  ros::Timer timer_;
+  std::string trajectory_topic_;
+  std::string trace_id_;
+  bool publish_once_ = true;
+  double republish_rate_hz_ = 0.2;
+  double start_delay_sec_ = 2.0;
+  uav_msgs::Trajectory trajectory_;
+};
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  ros::init(argc, argv, "dynamic_trajectory_publisher_node");
+  try {
+    DynamicTrajectoryPublisherNode node(ros::NodeHandle{}, ros::NodeHandle{"~"});
+    ros::spin();
+  } catch (const std::exception& exc) {
+    ROS_FATAL("dynamic_trajectory_publisher_node failed: %s", exc.what());
+    return 1;
+  }
+  return 0;
+}

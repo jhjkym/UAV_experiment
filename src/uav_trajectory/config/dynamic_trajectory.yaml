@@ -1,0 +1,26 @@
+trajectory_type: line
+frame_id: map
+start_delay_sec: 2.0
+altitude_offset_m: 1.0
+duration_sec: 20.0
+sample_period_sec: 0.05
+hold_end_sec: 5.0
+yaw_mode: fixed
+
+line_length_m: 1.0
+line_segment_duration_sec: 5.0
+circle_radius_m: 1.0
+circle_tangent_speed_mps: 0.5
+transition_duration_sec: 2.0
+figure8_amplitude_x_m: 1.0
+figure8_amplitude_y_m: 0.5
+
+max_velocity_mps: 1.0
+max_acceleration_mps2: 1.5
+max_jerk_mps3: 4.0
+low_speed_yaw_threshold_mps: 0.05
+
+start_x: 0.0
+start_y: 0.0
+start_z: 0.0
+start_yaw: 0.0

@@ -210,6 +210,10 @@ Bag summary:
 
 The bag, temporary logs, and PX4 generated logs remain outside Git.
 
+M0-C5A builds on the recorded C4 baseline only for offline trajectory and
+metric tooling. It does not repeat SITL flight, start PX4 or Gazebo, connect
+MAVROS, request OFFBOARD, arm, or land.
+
 ## Test Environment Note
 
 In the managed sandbox, ROS logging under the default home directory and local

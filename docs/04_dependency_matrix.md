@@ -78,3 +78,12 @@ M0-C4 SITL hover baseline:
 - Test note: sandboxed ROS logging and network interface discovery can be
   restricted; tests pass with an independent temporary `ROS_HOME` under
   `/tmp/uav_m0c4/ros_home`.
+
+M0-C5A dynamic trajectory baseline:
+- `uav_trajectory` adds a pure C++ dynamic trajectory generator for line,
+  circle, and figure-eight patterns.
+- No new dependency on `mavros_msgs`, Gazebo messages, PX4, or serial devices.
+- `scripts/analysis/trajectory_tracking_metrics.py` uses Python standard
+  library only.
+- This stage is offline: no PX4, Gazebo, MAVROS, arming, OFFBOARD, or landing
+  execution is part of the baseline.

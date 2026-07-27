@@ -1,0 +1,28 @@
+<launch>
+  <arg name="trajectory_type" default="line" />
+  <arg name="yaw_mode" default="fixed" />
+  <arg name="trajectory_topic" default="/uav/trajectory" />
+  <arg name="preview_topic" default="/uav/setpoint_preview" />
+  <arg name="publish_rate" default="30.0" />
+
+  <node pkg="uav_trajectory"
+        type="dynamic_trajectory_publisher_node"
+        name="dynamic_trajectory_publisher_node"
+        output="screen">
+    <rosparam command="load" file="$(find uav_trajectory)/config/dynamic_trajectory.yaml" />
+    <param name="trajectory_type" value="$(arg trajectory_type)" />
+    <param name="yaw_mode" value="$(arg yaw_mode)" />
+    <param name="trajectory_topic" value="$(arg trajectory_topic)" />
+  </node>
+
+  <node pkg="uav_trajectory"
+        type="trajectory_preview_node"
+        name="trajectory_preview_node"
+        output="screen">
+    <rosparam command="load" file="$(find uav_trajectory)/config/trajectory_preview.yaml" />
+    <param name="trajectory_topic" value="$(arg trajectory_topic)" />
+    <param name="preview_topic" value="$(arg preview_topic)" />
+    <param name="subscribe_uav_state" value="false" />
+    <param name="publish_rate" value="$(arg publish_rate)" />
+  </node>
+</launch>

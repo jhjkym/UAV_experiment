@@ -1,0 +1,17 @@
+<launch>
+  <node pkg="uav_trajectory"
+        type="trajectory_preview_node"
+        name="trajectory_preview_node"
+        output="screen">
+    <param name="trajectory_topic" value="/test/uav/trajectory" />
+    <param name="preview_topic" value="/test/uav/setpoint_preview" />
+    <param name="subscribe_uav_state" value="false" />
+    <param name="publish_rate" value="30.0" />
+    <rosparam param="supported_frames">[map]</rosparam>
+  </node>
+
+  <test test-name="test_dynamic_trajectory_preview_integration"
+        pkg="uav_trajectory"
+        type="test_dynamic_trajectory_preview_integration.py"
+        time-limit="35.0" />
+</launch>

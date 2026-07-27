@@ -136,6 +136,17 @@ Default parameters:
 The node clamps invalid publish rates to 30 Hz. Accepted configured rates are
 1 to 100 Hz.
 
+M0-C5A also provides an offline dynamic preview launch:
+
+```bash
+roslaunch uav_trajectory dynamic_trajectory_preview.launch trajectory_type:=line
+```
+
+Supported `trajectory_type` values are `line`, `circle`, and `figure8`.
+Supported yaw modes are `fixed` and `velocity_aligned`. This launch starts only
+`dynamic_trajectory_publisher_node` and `trajectory_preview_node`; it does not
+start PX4, Gazebo, MAVROS, or any output adapter.
+
 ## Verification
 
 ```bash
@@ -147,5 +158,6 @@ catkin_test_results build
 
 Tests cover trajectory validation, Hermite sampling, yaw wraparound, cache
 replacement, invalid trajectory rejection, time rollback handling, quaternion
-normalization, ROS preview publication, end-of-trajectory behavior, and absence
-of project publishers on MAVROS setpoint topics.
+normalization, dynamic trajectory generation, ROS preview publication,
+end-of-trajectory behavior, dynamic preview continuity, and absence of project
+publishers on MAVROS setpoint topics.
