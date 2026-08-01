@@ -87,13 +87,16 @@ class TrajectoryPreviewNode {
 
   void trajectoryCallback(const uav_msgs::TrajectoryConstPtr& msg) {
     std::string reason;
-    bool queued_pending = false;
-    if (cache_.queueOrReplaceIfValid(*msg, supported_frames_, ros::Time::now(), &reason,
-                                     &queued_pending)) {
-      if (!queued_pending) {
+    const auto action = cache_.queueOrReplaceIfValidDetailed(
+        *msg, supported_frames_, ros::Time::now(), &reason);
+    if (action != uav_trajectory::TrajectoryUpdateAction::kRejected) {
+      if (action == uav_trajectory::TrajectoryUpdateAction::kAcceptedActive) {
         last_sample_time_ = ros::Time(0);
         pending_log_.clear();
-      } else {
+        ROS_INFO("Accepted trajectory id=%u frame=%s points=%zu start=%.9f",
+                 msg->trajectory_id, msg->header.frame_id.c_str(), msg->points.size(),
+                 msg->header.stamp.toSec());
+      } else if (action == uav_trajectory::TrajectoryUpdateAction::kQueuedPending) {
         uav_msgs::Trajectory active;
         const std::uint32_t active_id = cache_.get(&active) ? active.trajectory_id : 0u;
         std::ostringstream pending_log;
@@ -102,14 +105,14 @@ class TrajectoryPreviewNode {
                     << " planned_switch=" << std::fixed << std::setprecision(9)
                     << msg->header.stamp.toSec();
         pending_log_ = pending_log.str();
-      }
-      if (queued_pending) {
         ROS_INFO("%s frame=%s points=%zu", pending_log_.c_str(),
                  msg->header.frame_id.c_str(), msg->points.size());
+      } else if (action == uav_trajectory::TrajectoryUpdateAction::kDuplicateActive) {
+        ROS_INFO_THROTTLE(1.0, "Ignored duplicate active trajectory id=%u start=%.9f",
+                          msg->trajectory_id, msg->header.stamp.toSec());
       } else {
-        ROS_INFO("Accepted trajectory id=%u frame=%s points=%zu start=%.9f",
-                 msg->trajectory_id, msg->header.frame_id.c_str(), msg->points.size(),
-                 msg->header.stamp.toSec());
+        ROS_INFO_THROTTLE(1.0, "Ignored duplicate pending trajectory id=%u start=%.9f",
+                          msg->trajectory_id, msg->header.stamp.toSec());
       }
     } else {
       ROS_WARN_THROTTLE(1.0, "Rejected trajectory id=%u: %s",

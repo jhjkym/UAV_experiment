@@ -36,15 +36,20 @@ TARGET_ALTITUDE_DELTA_M = 1.0
 PREFLIGHT_HOLD_SEC = 60.0
 FLIGHT_START_DELAY_SEC = 1.0
 INITIAL_HOLD_SEC = 1.0
-RISE_DURATION_SEC = 5.0
+RISE_DURATION_SEC = 8.0
 ALTITUDE_SETTLE_SEC = 2.0
 LINE_SEGMENT_DURATION_SEC = 5.0
 LINE_LENGTH_M = 1.0
-HOVER_DURATION_SEC = 10.0
+CENTER_HOLD_EVALUATION_SEC = 10.0
+LANDING_RESERVE_HOLD_SEC = 60.0
+HOVER_DURATION_SEC = CENTER_HOLD_EVALUATION_SEC + LANDING_RESERVE_HOLD_SEC
 TRAJECTORY_ACTIVE_SEC = (
     INITIAL_HOLD_SEC + RISE_DURATION_SEC + ALTITUDE_SETTLE_SEC +
     3.0 * LINE_SEGMENT_DURATION_SEC)
-TRAJECTORY_TOTAL_SEC = TRAJECTORY_ACTIVE_SEC + HOVER_DURATION_SEC
+CENTER_HOLD_END_SEC = TRAJECTORY_ACTIVE_SEC + CENTER_HOLD_EVALUATION_SEC
+TRAJECTORY_TOTAL_SEC = CENTER_HOLD_END_SEC + LANDING_RESERVE_HOLD_SEC
+MIN_RESERVE_AT_LAND_REQUEST_SEC = 30.0
+OUTPUT_GATE_CLOSE_AFTER_LAND_CONFIRM_SEC = 0.5
 ABORT_HEIGHT_ERROR_M = 0.9
 ABORT_HEIGHT_ERROR_DWELL_SEC = 1.0
 ABORT_HEIGHT_OVERSHOOT_M = 0.5
@@ -85,6 +90,14 @@ def tracking_acceptance_window(phase_starts: Dict[str, float],
   return phase_starts.get("LINE_FORWARD"), land_request_time or line_end_time
 
 
+def reserve_remaining_at(trajectory_start: float, stamp: float) -> float:
+  return trajectory_start + TRAJECTORY_TOTAL_SEC - stamp
+
+
+def can_close_output_gate(mode: str, land_confirmed: bool) -> bool:
+  return land_confirmed and mode == "AUTO.LAND"
+
+
 class DwellThreshold:
   def __init__(self, threshold: float, dwell_sec: float) -> None:
     self.threshold = threshold
@@ -109,7 +122,7 @@ class PhaseRecorder:
   ORDER = [
       "PREFLIGHT", "PRESTREAM", "OFFBOARD_PREARM", "ARMED_HOLD", "CLIMB",
       "LINE_FORWARD", "LINE_REVERSE", "LINE_RETURN", "CENTER_HOLD",
-      "LANDING", "COMPLETE", "ABORT",
+      "LANDING_PREP", "LANDING", "COMPLETE", "ABORT",
   ]
 
   def __init__(self) -> None:
@@ -194,6 +207,7 @@ class TopicState:
   target_samples: List[Tuple[float, float, float, float, float, float, float]] = field(default_factory=list)
   uav_samples: List[Tuple[float, float, float, float, float, float, float]] = field(default_factory=list)
   attitude_samples: List[Tuple[float, float, float]] = field(default_factory=list)
+  offboard_status_samples: List[Tuple[float, str, str, bool, bool]] = field(default_factory=list)
   adapter_fault: bool = False
   adapter_fault_count: int = 0
   exited_offboard: bool = False
@@ -217,11 +231,22 @@ class Experiment:
     self.arm_request_time: Optional[float] = None
     self.arm_confirm_time: Optional[float] = None
     self.land_request_time: Optional[float] = None
+    self.land_confirm_time: Optional[float] = None
+    self.land_service_call_started_at: Optional[float] = None
+    self.land_service_response_at: Optional[float] = None
+    self.land_mode_first_observed_at: Optional[float] = None
+    self.offboard_last_observed_at: Optional[float] = None
     self.disarm_time: Optional[float] = None
     self.flight_start_time: Optional[float] = None
     self.line_end_time: Optional[float] = None
     self.land_complete_time: Optional[float] = None
     self.output_enabled_time: Optional[float] = None
+    self.output_gate_close_requested_at: Optional[float] = None
+    self.output_disabled_time: Optional[float] = None
+    self.output_gate_close_error: Optional[str] = None
+    self.mode_at_output_gate_close: Optional[str] = None
+    self.land_request_setpoint_rate: Optional[float] = None
+    self.land_request_max_setpoint_gap: Optional[float] = None
     self.liftoff_time: Optional[float] = None
     self.height_error_dwell = DwellThreshold(ABORT_HEIGHT_ERROR_M, ABORT_HEIGHT_ERROR_DWELL_SEC)
     self.horizontal_error_dwell = DwellThreshold(1.0, 0.5)
@@ -230,6 +255,10 @@ class Experiment:
     self.phase = PhaseRecorder()
     self.flight_trajectory_id: Optional[int] = None
     self.flight_trajectory_stamp: Optional[float] = None
+    self.flight_trajectory_publisher_started_at: Optional[float] = None
+    self.trajectory_end_time: Optional[float] = None
+    self.adapter_fault_first_at: Optional[float] = None
+    self.center_hold_completed = False
 
   def start_process(self, name: str, command: str, cwd: Path) -> None:
     log_path = self.run_dir / f"{name}.log"
@@ -282,6 +311,12 @@ class Experiment:
         os.killpg(os.getpgid(managed.process.pid), signal.SIGTERM)
       except ProcessLookupError:
         return
+
+  def managed_process(self, name: str) -> Optional[ManagedProcess]:
+    for managed in reversed(self.processes):
+      if managed.name == name:
+        return managed
+    return None
 
   def run_cmd(self, command: str, cwd: Path = REPO_DIR, timeout: float = 15.0) -> str:
     result = subprocess.run(
@@ -346,6 +381,11 @@ class Experiment:
   def on_mavros_state(self, msg: State) -> None:
     previous = self.state.mavros_state
     self.state.mavros_state = msg
+    now = rospy.Time.now().to_sec()
+    if msg.mode == "OFFBOARD":
+      self.offboard_last_observed_at = now
+    if msg.mode == "AUTO.LAND" and self.land_mode_first_observed_at is None:
+      self.land_mode_first_observed_at = now
     if (previous is not None and previous.mode == "OFFBOARD" and
         msg.mode != "OFFBOARD" and msg.armed and self.land_request_time is None):
       self.state.exited_offboard = True
@@ -377,9 +417,18 @@ class Experiment:
 
   def on_status(self, msg: OffboardStatus) -> None:
     self.state.offboard_status = msg
+    now = rospy.Time.now().to_sec()
+    self.state.offboard_status_samples.append((
+        now,
+        msg.state_name,
+        msg.reason,
+        bool(msg.output_active),
+        bool(msg.runtime_gate_enabled),
+    ))
     if msg.state_name == "FAULT":
       if not self.state.adapter_fault:
         self.state.adapter_fault_count += 1
+        self.adapter_fault_first_at = now
       self.state.adapter_fault = True
 
   def on_target(self, msg: PositionTarget) -> None:
@@ -514,13 +563,38 @@ class Experiment:
         f"_line_segment_duration_sec:={LINE_SEGMENT_DURATION_SEC:.3f} "
         f"_hold_end_sec:={HOVER_DURATION_SEC:.3f} "
         "_yaw_mode:=fixed "
-        "_publish_once:=true"
+        "_publish_once:=true "
+        "_subscriber_wait_timeout_sec:=2.000 "
+        "_publish_repeat_count:=3 "
+        "_publish_repeat_interval_sec:=0.050 "
+        "_post_publish_grace_sec:=0.200"
     )
+    self.flight_trajectory_publisher_started_at = time.time()
     self.start_process("dynamic_flight_trajectory", command, REPO_DIR)
-    self.wait_for("flight trajectory id switch", lambda:
-                  self.state.setpoint_preview is not None and
-                  self.state.setpoint_preview.trajectory_valid and
-                  self.state.setpoint_preview.trajectory_id != old_id, 5.0, 0.05)
+    managed = self.managed_process("dynamic_flight_trajectory")
+
+    def flight_trajectory_delivered() -> bool:
+      if managed is not None:
+        exit_code = managed.process.poll()
+        if exit_code is not None and exit_code != 0:
+          self.write_delivery_diagnostics(old_id)
+          raise RuntimeError(
+              f"dynamic trajectory publisher exited before handoff exit_code={exit_code}")
+      return (self.state.setpoint_preview is not None and
+              self.state.setpoint_preview.trajectory_valid and
+              self.state.setpoint_preview.trajectory_id != old_id)
+
+    try:
+      self.wait_for("flight trajectory id switch", flight_trajectory_delivered,
+                    5.0, 0.05)
+    except Exception:
+      self.write_delivery_diagnostics(old_id)
+      raise
+    if managed is not None:
+      exit_code = managed.process.poll()
+      if exit_code not in (None, 0):
+        self.write_delivery_diagnostics(old_id)
+        raise RuntimeError(f"dynamic trajectory publisher failed exit_code={exit_code}")
     new_preview = self.state.setpoint_preview
     assert new_preview is not None
     self.flight_trajectory_id = new_preview.trajectory_id
@@ -536,9 +610,42 @@ class Experiment:
         flush=True,
     )
 
+  def write_delivery_diagnostics(self, old_id: int) -> None:
+    preview_id = None
+    preview_stamp = None
+    if self.state.setpoint_preview is not None:
+      preview_id = self.state.setpoint_preview.trajectory_id
+      preview_stamp = self.state.setpoint_preview.header.stamp.to_sec()
+    diagnostics = {
+        "old_preview_trajectory_id": old_id,
+        "current_preview_trajectory_id": preview_id,
+        "current_preview_stamp": preview_stamp,
+        "flight_trajectory_stamp": self.flight_trajectory_stamp,
+        "flight_trajectory_publisher_started_at": self.flight_trajectory_publisher_started_at,
+        "trajectory_topic_publishers": None,
+        "trajectory_topic_subscribers": None,
+        "preview_topic_publishers": None,
+        "preview_topic_subscribers": None,
+    }
+    for topic, pub_key, sub_key in [
+        ("/uav/trajectory", "trajectory_topic_publishers", "trajectory_topic_subscribers"),
+        ("/uav/setpoint_preview", "preview_topic_publishers", "preview_topic_subscribers"),
+    ]:
+      try:
+        output = self.run_cmd(f"rostopic info {topic}", timeout=5.0)
+      except Exception as exc:
+        output = f"failed: {exc}"
+      diagnostics[pub_key] = output
+      diagnostics[sub_key] = output
+    (self.run_dir / "delivery_diagnostics.json").write_text(
+        json.dumps(diagnostics, indent=2, sort_keys=True), encoding="utf-8")
+
   def call_set_output(self, enabled: bool) -> None:
     rospy.wait_for_service("/offboard_adapter_node/set_output_enabled", timeout=5.0)
     service = rospy.ServiceProxy("/offboard_adapter_node/set_output_enabled", SetBool)
+    request_time = time.time()
+    if not enabled and self.output_gate_close_requested_at is None:
+      self.output_gate_close_requested_at = request_time
     response = service(enabled)
     self.service_calls.append({"service": "set_output_enabled", "value": enabled,
                                "success": bool(response.success), "message": response.message})
@@ -546,15 +653,27 @@ class Experiment:
       raise RuntimeError(f"failed to enable output gate: {response.message}")
     if enabled and response.success and self.output_enabled_time is None:
       self.output_enabled_time = time.time()
+    if not enabled and response.success:
+      self.output_disabled_time = time.time()
+      self.mode_at_output_gate_close = (
+          self.state.mavros_state.mode if self.state.mavros_state is not None else None)
+    if not enabled and not response.success:
+      self.output_gate_close_error = response.message
 
   def call_mode(self, mode: str, require_mode: bool = True) -> None:
     rospy.wait_for_service("/mavros/set_mode", timeout=5.0)
     service = rospy.ServiceProxy("/mavros/set_mode", SetMode)
     for attempt in range(1, 4):
       request_time = time.time()
+      if mode == "AUTO.LAND" and self.land_service_call_started_at is None:
+        self.land_service_call_started_at = request_time
       response = service(custom_mode=mode)
+      response_time = time.time()
+      if mode == "AUTO.LAND":
+        self.land_service_response_at = response_time
       self.service_calls.append({"service": "set_mode", "mode": mode,
-                                 "attempt": attempt, "mode_sent": bool(response.mode_sent)})
+                                 "attempt": attempt, "mode_sent": bool(response.mode_sent),
+                                 "request_time": request_time, "response_time": response_time})
       if mode == "OFFBOARD" and self.mode_request_time is None:
         self.mode_request_time = request_time
       if mode == "AUTO.LAND" and self.land_request_time is None:
@@ -564,6 +683,8 @@ class Experiment:
         if self.state.mavros_state is not None and self.state.mavros_state.mode == mode:
           if mode == "OFFBOARD" and self.mode_confirm_time is None:
             self.mode_confirm_time = time.time()
+          if mode == "AUTO.LAND" and self.land_confirm_time is None:
+            self.land_confirm_time = time.time()
           return
         time.sleep(0.1)
       if not require_mode:
@@ -598,6 +719,14 @@ class Experiment:
       return 0.0
     return (len(samples) - 1) / (samples[-1] - samples[0])
 
+  def current_setpoint_rate_and_gap(self, window_sec: float = 2.0) -> Tuple[float, float]:
+    now = rospy.Time.now().to_sec()
+    samples = [t for t in self.state.target_times if t >= now - window_sec]
+    if len(samples) < 2:
+      return 0.0, float("inf")
+    intervals = [b - a for a, b in zip(samples[:-1], samples[1:])]
+    return (len(samples) - 1) / (samples[-1] - samples[0]), max(intervals)
+
   def wait_prestream(self) -> float:
     self.wait_for("healthy setpoint preview", lambda:
                   self.state.setpoint_preview is not None and
@@ -625,7 +754,8 @@ class Experiment:
     assert self.target_position is not None
     assert self.flight_trajectory_stamp is not None
     self.flight_start_time = time.time()
-    self.line_end_time = self.flight_trajectory_stamp + TRAJECTORY_TOTAL_SEC
+    self.line_end_time = self.flight_trajectory_stamp + CENTER_HOLD_END_SEC
+    self.trajectory_end_time = self.flight_trajectory_stamp + TRAJECTORY_TOTAL_SEC
     while time.time() < self.line_end_time and not rospy.is_shutdown():
       self.update_phase_from_time(rospy.Time.now().to_sec())
       reason = self.abort_condition(self.flight_start_time)
@@ -637,6 +767,9 @@ class Experiment:
           self.call_mode("AUTO.LAND", require_mode=False)
         return
       time.sleep(0.1)
+    self.update_phase_from_time(rospy.Time.now().to_sec())
+    self.center_hold_completed = True
+    self.set_phase("LANDING_PREP")
 
   def update_phase_from_time(self, now: float) -> None:
     if self.flight_trajectory_stamp is None:
@@ -654,8 +787,10 @@ class Experiment:
       self.set_phase("LINE_REVERSE")
     elif elapsed < INITIAL_HOLD_SEC + RISE_DURATION_SEC + ALTITUDE_SETTLE_SEC + 3.0 * LINE_SEGMENT_DURATION_SEC:
       self.set_phase("LINE_RETURN")
-    else:
+    elif elapsed < CENTER_HOLD_END_SEC:
       self.set_phase("CENTER_HOLD")
+    else:
+      self.set_phase("LANDING_PREP")
 
   def abort_condition(self, flight_start: float) -> Optional[str]:
     state = self.state.uav_state
@@ -703,13 +838,36 @@ class Experiment:
     return None
 
   def land_and_wait_disarmed(self) -> None:
+    if self.flight_trajectory_stamp is None:
+      raise RuntimeError("flight trajectory timestamp is unavailable before landing")
+    if self.state.mavros_state is None:
+      raise RuntimeError("MAVROS state unavailable before landing")
+    now = rospy.Time.now().to_sec()
+    remaining = reserve_remaining_at(self.flight_trajectory_stamp, now)
+    if remaining < MIN_RESERVE_AT_LAND_REQUEST_SEC:
+      raise RuntimeError(f"landing reserve too short before AUTO.LAND request: {remaining:.3f} s")
+    if self.state.offboard_status is None or self.state.offboard_status.state_name == "FAULT":
+      raise RuntimeError("adapter is not healthy before AUTO.LAND request")
+    self.land_request_setpoint_rate, self.land_request_max_setpoint_gap = (
+        self.current_setpoint_rate_and_gap(2.0))
+    if self.land_request_setpoint_rate < 20.0 or self.land_request_max_setpoint_gap > 0.10:
+      raise RuntimeError(
+          "setpoint stream unhealthy before AUTO.LAND request: "
+          f"rate={self.land_request_setpoint_rate:.2f}Hz gap={self.land_request_max_setpoint_gap:.3f}s")
+    self.call_mode("AUTO.LAND", require_mode=True)
+    if self.state.mavros_state is None or self.state.mavros_state.mode != "AUTO.LAND":
+      raise RuntimeError("AUTO.LAND was not confirmed")
     self.set_phase("LANDING")
-    self.call_mode("AUTO.LAND", require_mode=False)
-    deadline_mode = time.time() + 8.0
-    while time.time() < deadline_mode:
-      if self.state.mavros_state is not None and self.state.mavros_state.mode == "AUTO.LAND":
-        break
-      time.sleep(0.1)
+    if not can_close_output_gate(self.state.mavros_state.mode, self.land_confirm_time is not None):
+      raise RuntimeError(f"refusing to close output gate while mode={self.state.mavros_state.mode}")
+    close_deadline = time.time() + OUTPUT_GATE_CLOSE_AFTER_LAND_CONFIRM_SEC
+    self.call_set_output(False)
+    if self.output_disabled_time is None or self.output_disabled_time > close_deadline:
+      self.output_gate_close_error = "output gate was not closed within deadline after AUTO.LAND confirm"
+    self.wait_for("runtime output gate closed", lambda:
+                  self.state.offboard_status is not None and
+                  not self.state.offboard_status.output_active and
+                  self.state.offboard_status.state_name != "FAULT", 3.0, 0.05)
     deadline = time.time() + 90.0
     while time.time() < deadline:
       if self.state.mavros_state is not None and not self.state.mavros_state.armed:
@@ -723,8 +881,7 @@ class Experiment:
       z = self.state.uav_state.pose.position.z
       vz = self.state.uav_state.twist.linear.z
       if self.start_position is not None and abs(z - self.start_position[2]) < 0.15 and abs(vz) < 0.1:
-        self.call_arm(False)
-        return
+        raise RuntimeError("vehicle landed but PX4 did not auto-disarm; refusing forced in-air disarm")
     raise RuntimeError("vehicle did not disarm after AUTO.LAND")
 
   def write_samples(self) -> None:
@@ -771,6 +928,41 @@ class Experiment:
       metrics["arming_sec"] = self.arm_confirm_time - self.arm_request_time
     if self.land_request_time and self.disarm_time:
       metrics["landing_to_disarm_sec"] = self.disarm_time - self.land_request_time
+    if self.land_request_time and self.land_confirm_time:
+      metrics["land_request_to_confirm_sec"] = self.land_confirm_time - self.land_request_time
+    if self.land_confirm_time and self.output_disabled_time:
+      metrics["land_confirm_to_output_gate_close_sec"] = (
+          self.output_disabled_time - self.land_confirm_time)
+    if self.flight_trajectory_stamp:
+      if self.land_request_time:
+        metrics["reserve_remaining_at_land_request_sec"] = reserve_remaining_at(
+            self.flight_trajectory_stamp, self.land_request_time)
+      if self.land_confirm_time:
+        metrics["reserve_remaining_at_land_confirm_sec"] = reserve_remaining_at(
+            self.flight_trajectory_stamp, self.land_confirm_time)
+    metrics.update({
+        "center_hold_completed": self.center_hold_completed,
+        "landing_reserve_sec": LANDING_RESERVE_HOLD_SEC,
+        "land_service_call_started_at": self.land_service_call_started_at,
+        "land_service_response_at": self.land_service_response_at,
+        "land_mode_first_observed_at": self.land_mode_first_observed_at,
+        "offboard_last_observed_at": self.offboard_last_observed_at,
+        "output_gate_close_requested_at": self.output_gate_close_requested_at,
+        "output_gate_closed_at": self.output_disabled_time,
+        "trajectory_natural_end_at": self.trajectory_end_time,
+        "adapter_fault_first_at": self.adapter_fault_first_at,
+        "disarm_at": self.disarm_time,
+        "setpoint_rate_before_land_request": self.land_request_setpoint_rate,
+        "max_setpoint_gap_before_land_request": self.land_request_max_setpoint_gap,
+        "output_gate_closed_after_land_confirm": (
+            self.land_confirm_time is not None and self.output_disabled_time is not None and
+            self.output_disabled_time >= self.land_confirm_time),
+        "output_gate_close_error": self.output_gate_close_error,
+        "mode_at_output_gate_close": self.mode_at_output_gate_close,
+        "adapter_fault_before_land_request": self.count_adapter_faults(None, self.land_request_time),
+        "adapter_fault_before_land_confirm": self.count_adapter_faults(None, self.land_confirm_time),
+        "adapter_fault_after_land_confirm": self.count_adapter_faults(self.land_confirm_time, None),
+    })
     if self.state.attitude_samples:
       metrics["max_roll_deg"] = max(abs(math.degrees(s[1])) for s in self.state.attitude_samples)
       metrics["max_pitch_deg"] = max(abs(math.degrees(s[2])) for s in self.state.attitude_samples)
@@ -794,6 +986,21 @@ class Experiment:
     metrics.update(turnpoint_metrics)
     metrics["phase_metrics"] = self.compute_phase_metrics()
     return metrics
+
+  def count_adapter_faults(self, start: Optional[float], end: Optional[float]) -> int:
+    count = 0
+    in_fault = False
+    for stamp, state_name, _, _, _ in self.state.offboard_status_samples:
+      if start is not None and stamp < start:
+        continue
+      if end is not None and stamp > end:
+        continue
+      if state_name == "FAULT" and not in_fault:
+        count += 1
+        in_fault = True
+      elif state_name != "FAULT":
+        in_fault = False
+    return count
 
   def nearest_actual(self, t: float) -> Optional[Tuple[float, float, float, float, float, float, float]]:
     if not self.state.uav_samples:
@@ -1005,7 +1212,6 @@ class Experiment:
     self.start_dynamic_flight_trajectory(frame_id)
     self.monitor_flight()
     self.land_and_wait_disarmed()
-    self.call_set_output(False)
     self.write_samples()
     metrics = self.compute_metrics(prestream_rate)
     summary = {
@@ -1024,6 +1230,20 @@ class Experiment:
         "ground_hold_trajectory_id": ground_hold_id,
         "flight_trajectory_id": self.flight_trajectory_id,
         "flight_trajectory_stamp": self.flight_trajectory_stamp,
+        "center_hold_end_time": self.line_end_time,
+        "flight_trajectory_end_time": self.trajectory_end_time,
+        "trajectory_natural_end_at": self.trajectory_end_time,
+        "land_request_time": self.land_request_time,
+        "land_confirm_time": self.land_confirm_time,
+        "land_service_call_started_at": self.land_service_call_started_at,
+        "land_service_response_at": self.land_service_response_at,
+        "land_mode_first_observed_at": self.land_mode_first_observed_at,
+        "offboard_last_observed_at": self.offboard_last_observed_at,
+        "output_gate_close_requested_at": self.output_gate_close_requested_at,
+        "output_disabled_time": self.output_disabled_time,
+        "output_gate_closed_at": self.output_disabled_time,
+        "adapter_fault_first_at": self.adapter_fault_first_at,
+        "disarm_at": self.disarm_time,
         "liftoff_time": self.liftoff_time,
         "phase_times": self.phase.summary(),
         "mavros_connected": self.state.mavros_state.connected if self.state.mavros_state else None,
@@ -1054,7 +1274,13 @@ def main() -> int:
         not metrics.get("nan_or_inf") and
         metrics.get("nan_or_inf_count", 1) == 0 and
         not metrics.get("adapter_fault") and
+        metrics.get("adapter_fault_count", 1) == 0 and
         metrics.get("unexpected_offboard_exit_count", 1) == 0 and
+        metrics.get("center_hold_completed") is True and
+        metrics.get("reserve_remaining_at_land_request_sec", 0.0) >= MIN_RESERVE_AT_LAND_REQUEST_SEC and
+        metrics.get("output_gate_closed_after_land_confirm") is True and
+        metrics.get("output_gate_close_error") is None and
+        metrics.get("mode_at_output_gate_close") == "AUTO.LAND" and
         metrics.get("final_armed") is False and
         summary["phase_times"].get("LINE_FORWARD", {}).get("status") == "reached" and
         summary["phase_times"].get("LINE_REVERSE", {}).get("status") == "reached" and
@@ -1072,7 +1298,11 @@ def main() -> int:
     return 1
   finally:
     try:
-      if getattr(experiment, "state", None) and experiment.state.mavros_state is not None:
+      mavros_state = experiment.state.mavros_state if getattr(experiment, "state", None) else None
+      can_disable_output = (
+          mavros_state is not None and
+          (not mavros_state.armed or mavros_state.mode == "AUTO.LAND"))
+      if can_disable_output and experiment.output_disabled_time is None:
         try:
           experiment.call_set_output(False)
         except Exception:

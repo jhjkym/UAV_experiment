@@ -390,6 +390,94 @@ TEST(TrajectoryCache, PendingFirstPointCanBeContinuousWithActiveOutput) {
   EXPECT_NEAR(after.point.acceleration.x, before.point.acceleration.x, kTolerance);
 }
 
+TEST(TrajectoryCache, DuplicateActiveTrajectoryIsIdempotent) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  auto trajectory = makeTrajectory();
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(trajectory, frames(), ros::Time(100.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kAcceptedActive);
+
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(trajectory, frames(), ros::Time(101.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kDuplicateActive);
+  uav_msgs::Trajectory cached;
+  bool promoted = true;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(101.0), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.header.stamp, ros::Time(100.0));
+  EXPECT_EQ(cached.trajectory_id, 42u);
+}
+
+TEST(TrajectoryCache, DuplicatePendingTrajectoryIsIdempotentAndSwitchesOnce) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(makeTrajectory(), frames(), ros::Time(100.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kAcceptedActive);
+
+  auto pending = makeTrajectory();
+  pending.trajectory_id = 43;
+  pending.header.stamp = ros::Time(110.0);
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(pending, frames(), ros::Time(105.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kQueuedPending);
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(pending, frames(), ros::Time(105.5),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kDuplicatePending);
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(109.9), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 42u);
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(110.0), &cached, &promoted));
+  EXPECT_TRUE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 43u);
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(110.1), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 43u);
+}
+
+TEST(TrajectoryCache, RejectsSameIdDifferentContent) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  auto trajectory = makeTrajectory();
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(trajectory, frames(), ros::Time(100.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kAcceptedActive);
+
+  auto conflict = trajectory;
+  conflict.points.back().position.x += 0.1;
+  EXPECT_EQ(cache.queueOrReplaceIfValidDetailed(conflict, frames(), ros::Time(101.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kRejected);
+  EXPECT_NE(reason.find("conflicting trajectory content"), std::string::npos);
+}
+
+TEST(TrajectoryCache, DuplicateActiveDoesNotResetExecutionTime) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  const auto trajectory = makeTrajectory();
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(trajectory, frames(), ros::Time(100.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kAcceptedActive);
+  const auto before =
+      uav_trajectory::sampleTrajectory(trajectory, ros::Time(101.0), ros::Time(100.9));
+
+  ASSERT_EQ(cache.queueOrReplaceIfValidDetailed(trajectory, frames(), ros::Time(101.0),
+                                                &reason),
+            uav_trajectory::TrajectoryUpdateAction::kDuplicateActive);
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(101.0), &cached, &promoted));
+  const auto after =
+      uav_trajectory::sampleTrajectory(cached, ros::Time(101.0), ros::Time(100.9));
+  EXPECT_FALSE(promoted);
+  EXPECT_NEAR(before.point.position.x, after.point.position.x, kTolerance);
+  EXPECT_NEAR(before.point.velocity.x, after.point.velocity.x, kTolerance);
+}
+
 TEST(TrajectoryPreview, MakePreviewCarriesFrameIdAndStateFreshness) {
   const auto trajectory = makeTrajectory();
   const auto sample =

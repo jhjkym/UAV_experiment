@@ -28,6 +28,14 @@ struct SampleResult {
   uav_msgs::TrajectoryPoint point;
 };
 
+enum class TrajectoryUpdateAction {
+  kRejected,
+  kAcceptedActive,
+  kQueuedPending,
+  kDuplicateActive,
+  kDuplicatePending,
+};
+
 ValidationResult validateTrajectory(const uav_msgs::Trajectory& trajectory,
                                     const std::vector<std::string>& supported_frames);
 
@@ -62,6 +70,12 @@ class TrajectoryCache {
                              const ros::Time& now,
                              std::string* rejection_reason,
                              bool* queued_pending);
+
+  TrajectoryUpdateAction queueOrReplaceIfValidDetailed(
+      const uav_msgs::Trajectory& trajectory,
+      const std::vector<std::string>& supported_frames,
+      const ros::Time& now,
+      std::string* rejection_reason);
 
   bool get(uav_msgs::Trajectory* trajectory) const;
 

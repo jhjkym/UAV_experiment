@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,14 @@ class DynamicTrajectoryPublisherNode {
     private_nh_.param<std::string>("trajectory_topic", trajectory_topic_, "/uav/trajectory");
     private_nh_.param<bool>("publish_once", publish_once_, true);
     private_nh_.param<double>("republish_rate_hz", republish_rate_hz_, 0.2);
+    private_nh_.param<double>("subscriber_wait_timeout_sec",
+                              subscriber_wait_timeout_sec_, 2.0);
+    private_nh_.param<double>("publish_once_subscriber_wait_sec",
+                              subscriber_wait_timeout_sec_, subscriber_wait_timeout_sec_);
+    private_nh_.param<int>("publish_repeat_count", publish_repeat_count_, 3);
+    private_nh_.param<double>("publish_repeat_interval_sec",
+                              publish_repeat_interval_sec_, 0.05);
+    private_nh_.param<double>("post_publish_grace_sec", post_publish_grace_sec_, 0.20);
 
     uav_trajectory::DynamicTrajectoryConfig config;
     std::string trajectory_type = "line";
@@ -66,6 +75,7 @@ class DynamicTrajectoryPublisherNode {
       ROS_FATAL("Invalid yaw_mode '%s'", yaw_mode.c_str());
       throw std::runtime_error("invalid yaw_mode");
     }
+    validatePublisherParameters();
 
     const auto result = uav_trajectory::generateDynamicTrajectory(config, start);
     if (!result.valid) {
@@ -86,8 +96,40 @@ class DynamicTrajectoryPublisherNode {
              result.measured.max_acceleration_mps2, result.measured.max_jerk_mps3,
              trajectory_topic_.c_str());
     if (publish_once_) {
-      publishTrajectory();
-      ros::Duration(0.5).sleep();
+      trajectory_.header.stamp = ros::Time::now() + ros::Duration(start_delay_sec_);
+      const ros::WallTime wait_start = ros::WallTime::now();
+      while (ros::ok() && publisher_.getNumSubscribers() == 0 &&
+             (ros::WallTime::now() - wait_start).toSec() < subscriber_wait_timeout_sec_) {
+        ros::WallDuration(0.02).sleep();
+      }
+      const double wait_sec = (ros::WallTime::now() - wait_start).toSec();
+      const uint32_t subscriber_count = publisher_.getNumSubscribers();
+      if (subscriber_count == 0) {
+        ROS_ERROR("publish_once_result exit_reason=no_subscriber trajectory_id=%u "
+                  "subscriber_count=0 wait_sec=%.6f timeout_sec=%.6f publish_count=0",
+                  trajectory_.trajectory_id, wait_sec, subscriber_wait_timeout_sec_);
+        throw std::runtime_error("publish_once timed out waiting for subscriber");
+      }
+      ROS_INFO("publish_once_ready trajectory_id=%u subscriber_count=%u wait_sec=%.6f "
+               "planned_publish_count=%d header_stamp=%.9f",
+               trajectory_.trajectory_id, subscriber_count, wait_sec,
+               publish_repeat_count_, trajectory_.header.stamp.toSec());
+      for (int i = 0; ros::ok() && i < publish_repeat_count_; ++i) {
+        publishTrajectory();
+        ROS_INFO("publish_once_message trajectory_id=%u publish_index=%d publish_wall_time=%.9f "
+                 "subscriber_count=%u header_stamp=%.9f",
+                 trajectory_.trajectory_id, i + 1, ros::WallTime::now().toSec(),
+                 publisher_.getNumSubscribers(), trajectory_.header.stamp.toSec());
+        if (i + 1 < publish_repeat_count_) {
+          ros::WallDuration(publish_repeat_interval_sec_).sleep();
+        }
+      }
+      ros::WallDuration(post_publish_grace_sec_).sleep();
+      ROS_INFO("publish_once_result exit_reason=published trajectory_id=%u "
+               "subscriber_count=%u wait_sec=%.6f publish_count=%d "
+               "post_publish_grace_sec=%.6f",
+               trajectory_.trajectory_id, publisher_.getNumSubscribers(), wait_sec,
+               publish_repeat_count_, post_publish_grace_sec_);
       ros::shutdown();
     } else {
       timer_ = nh_.createTimer(ros::Duration(1.0 / rate),
@@ -98,12 +140,36 @@ class DynamicTrajectoryPublisherNode {
 
  private:
   void timerCallback(const ros::TimerEvent&) {
+    trajectory_.header.stamp = ros::Time::now() + ros::Duration(start_delay_sec_);
     publishTrajectory();
   }
 
   void publishTrajectory() {
-    trajectory_.header.stamp = ros::Time::now() + ros::Duration(start_delay_sec_);
     publisher_.publish(trajectory_);
+  }
+
+  void validatePublisherParameters() const {
+    if (!std::isfinite(republish_rate_hz_) || republish_rate_hz_ <= 0.0) {
+      throw std::runtime_error("republish_rate_hz must be finite and positive");
+    }
+    if (!std::isfinite(subscriber_wait_timeout_sec_) ||
+        subscriber_wait_timeout_sec_ < 0.0 ||
+        subscriber_wait_timeout_sec_ > 60.0) {
+      throw std::runtime_error("subscriber_wait_timeout_sec must be finite in [0, 60]");
+    }
+    if (publish_repeat_count_ < 1 || publish_repeat_count_ > 100) {
+      throw std::runtime_error("publish_repeat_count must be in [1, 100]");
+    }
+    if (!std::isfinite(publish_repeat_interval_sec_) ||
+        publish_repeat_interval_sec_ < 0.0 ||
+        publish_repeat_interval_sec_ > 10.0) {
+      throw std::runtime_error("publish_repeat_interval_sec must be finite in [0, 10]");
+    }
+    if (!std::isfinite(post_publish_grace_sec_) ||
+        post_publish_grace_sec_ < 0.0 ||
+        post_publish_grace_sec_ > 60.0) {
+      throw std::runtime_error("post_publish_grace_sec must be finite in [0, 60]");
+    }
   }
 
   ros::NodeHandle nh_;
@@ -114,6 +180,10 @@ class DynamicTrajectoryPublisherNode {
   std::string trace_id_;
   bool publish_once_ = true;
   double republish_rate_hz_ = 0.2;
+  double subscriber_wait_timeout_sec_ = 2.0;
+  int publish_repeat_count_ = 3;
+  double publish_repeat_interval_sec_ = 0.05;
+  double post_publish_grace_sec_ = 0.20;
   double start_delay_sec_ = 2.0;
   uav_msgs::Trajectory trajectory_;
 };

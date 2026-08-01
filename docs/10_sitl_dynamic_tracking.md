@@ -71,7 +71,7 @@ The flight sequence is:
 ```text
 (x0, y0, z0)
 -> 1 s initial hold
--> 5 s smooth climb to (x0, y0, z0 + 1.0)
+-> 8 s smooth climb to (x0, y0, z0 + 1.0)
 -> 2 s center hold at altitude
 -> 5 s smooth line to (x0 + 1.0, y0, z0 + 1.0)
 -> 5 s smooth line to (x0 - 1.0, y0, z0 + 1.0)
@@ -237,6 +237,164 @@ NaN/Inf count: 0
 
 This passes the R1A ground continuity gate. M0-C5B1 itself remains pending
 because no post-fix line-tracking flight has been executed.
+
+## R2 Flight Recheck And R2A Fix
+
+M0-C5B1-R2 is preserved as:
+
+```text
+/tmp/uav_m0_c5b1/run_20260801_130527
+```
+
+R2 used the pending handoff protocol validated by R1A. The handoff succeeded:
+
+```text
+active trajectory ID: 1785560741
+pending trajectory ID: 2197811487
+planned switch time: 1785560747.107761383
+actual switch time: 1785560747.135628700
+switch timing error: 0.027867 s
+position jump: 0.033944 m
+velocity jump: 0.000000 m/s
+acceleration jump: 0.000000 m/s^2
+setpoint average rate: 29.999879 Hz
+maximum setpoint gap: 0.035681 s
+```
+
+The vehicle completed the full line tracking sequence, requested `AUTO.LAND`,
+landed, and PX4 automatically disarmed. The performance metrics met the line
+tracking gates:
+
+```text
+data coverage: 1.0
+horizontal RMS error: 0.067982 m
+maximum horizontal error: 0.167865 m
+height RMS error: 0.061020 m
+center endpoint error: 0.064067 m
+NaN/Inf count: 0
+unexpected OFFBOARD exit count: 0
+final armed=false
+```
+
+R2 was still not accepted because `adapter_fault_count=1`. The only FAULT came
+from the terminal trajectory naturally ending, not from the pending handoff.
+Rosbag and logs show the sequence:
+
+```text
+CENTER_HOLD start: 1785560772.795196
+CENTER_HOLD complete / AUTO.LAND request proxy: 1785560782.857281
+trajectory natural end: 1785560782.778042
+adapter FAULT "trajectory is finished": 1785560783.155630
+AUTO.LAND mode confirmed by MAVROS: 1785560783.746935
+PX4 disarmed by landing: before COMPLETE at 1785560799.787421
+```
+
+That is the `AUTO.LAND request -> trajectory ended -> adapter FAULT ->
+AUTO.LAND confirmed` ordering. The fault occurred about `0.298 s` after the
+AUTO.LAND request proxy and about `0.591 s` before MAVROS first reported
+`AUTO.LAND`.
+
+R2A fixes the experiment lifecycle rather than adapter policy. The dynamic
+trajectory now uses the existing `hold_end_sec` to create a terminal hold with
+two meanings:
+
+```yaml
+center_hold_evaluation_sec: 10.0
+landing_reserve_hold_sec: 60.0
+```
+
+The first 10 seconds remain `CENTER_HOLD` and are included in performance
+metrics. The reserve is marked `LANDING_PREP`, keeps the same center target,
+zero velocity, zero acceleration, and fixed yaw, and is excluded from tracking
+RMS. Normal shutdown becomes:
+
+```text
+CENTER_HOLD complete
+-> LANDING_PREP while setpoints are still valid
+-> request AUTO.LAND with at least 30 s reserve remaining
+-> confirm MAVROS mode=AUTO.LAND
+-> close the adapter runtime output gate within 0.5 s
+-> monitor MAVROS state and odometry until PX4 auto-disarms
+-> final armed=false
+```
+
+If `AUTO.LAND` is not confirmed, the runtime output gate remains open and the
+valid center hold continues while the script uses finite retries. The script
+does not wait for the trajectory to naturally end and does not force disarm in
+the air. R2A does not delete or relax the `adapter_fault_count == 0` acceptance
+requirement and does not change the production adapter. R2A only updates code,
+tests, and documentation; it did not execute a flight.
+
+An authorized R2A flight attempt is preserved as:
+
+```text
+/tmp/uav_m0_c5b1/run_20260801_133713
+```
+
+This run did not reach the climb, line tracking, center hold, or landing
+reserve stages. The script completed the ground hold, OFFBOARD request, and
+arming sequence, then started the dynamic trajectory publisher and timed out
+waiting for the preview trajectory ID to switch. No `summary.json` was produced.
+The project-node log contains only the ground-hold trajectory acceptance, and
+`dynamic_flight_trajectory.log` is empty, which shows that the future dynamic
+trajectory was not received by the preview node before the one-shot publisher
+exited. The exception path requested `AUTO.LAND`; the rosbag observes
+`mode=AUTO.LAND` at `1785562654.640247`, but the bag ends at
+`1785562654.679955` with `armed=true`. Final disarm was not confirmed by the
+bag. The landing reserve fix therefore remains unvalidated by flight.
+
+The publisher side now has explicit `publish_once` lifecycle parameters:
+
+```yaml
+subscriber_wait_timeout_sec: 2.0
+publish_repeat_count: 3
+publish_repeat_interval_sec: 0.05
+post_publish_grace_sec: 0.20
+```
+
+`publish_once=false` preserves continuous republishing. `publish_once=true`
+waits for at least one subscriber using wall time, exits non-zero if no
+subscriber appears before the timeout, then repeatedly publishes the same
+generated `Trajectory` message. The repeated messages keep the same
+`trajectory_id` and `header.stamp`; the trajectory is not regenerated between
+publishes. The node logs the trajectory ID, subscriber count, wait duration,
+publish count, each publish event, and final exit reason.
+
+The preview cache treats byte-for-byte equivalent same-ID messages as
+idempotent duplicates. A duplicate active or pending trajectory does not reset
+the active sample clock, does not create a second pending entry, and cannot
+cause multiple trajectory-ID switches. A same-ID message with different content
+is rejected and logged as a conflict rather than silently replacing the active
+or pending trajectory.
+
+M0-C5B1-R2A-D1 is a non-flight ROS delivery stress test preserved as:
+
+```text
+/tmp/uav_m0_c5b1/delivery_stress_20260801_174922
+```
+
+Only `roscore`, `trajectory_preview_node`, test listeners, and
+`dynamic_trajectory_publisher_node` were started. PX4, Gazebo, MAVROS, the
+offboard output chain, arming, mode changes, `AUTO.LAND`, and flight were not
+used. The stress result was:
+
+```text
+scenario A preview-first: 20/20
+scenario B publisher-first delayed subscriber: 20/20
+scenario C no subscriber timeout: 5/5 correct non-zero exits
+scenario D duplicate message idempotency: 10/10
+scenario E C5B1-style ground-hold to future dynamic handoff: 20/20
+wrong trajectory ID count: 0
+unexpected duplicate switch count: 0
+NaN/Inf count: 0
+residual ROS process count: 0
+maximum delivery latency: 2.304274 s
+mean delivery latency: 1.327191 s
+P95 delivery latency: 2.041833 s
+```
+
+The landing reserve flight acceptance is still pending a new explicit SITL
+authorization and run.
 
 ## First-Run Acceptance
 

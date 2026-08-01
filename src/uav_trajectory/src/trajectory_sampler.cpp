@@ -19,6 +19,43 @@ bool supportedFrame(const std::string& frame,
          supported_frames.end();
 }
 
+bool sameVector3(const geometry_msgs::Vector3& lhs,
+                 const geometry_msgs::Vector3& rhs) {
+  return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+}
+
+bool samePoint3(const geometry_msgs::Point& lhs,
+                const geometry_msgs::Point& rhs) {
+  return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z;
+}
+
+bool sameTrajectoryPoint(const uav_msgs::TrajectoryPoint& lhs,
+                         const uav_msgs::TrajectoryPoint& rhs) {
+  return lhs.time_from_start == rhs.time_from_start &&
+         samePoint3(lhs.position, rhs.position) &&
+         sameVector3(lhs.velocity, rhs.velocity) &&
+         sameVector3(lhs.acceleration, rhs.acceleration) &&
+         lhs.yaw == rhs.yaw &&
+         lhs.yaw_rate == rhs.yaw_rate;
+}
+
+bool sameTrajectoryContent(const uav_msgs::Trajectory& lhs,
+                           const uav_msgs::Trajectory& rhs) {
+  if (lhs.header.stamp != rhs.header.stamp ||
+      lhs.header.frame_id != rhs.header.frame_id ||
+      lhs.mode != rhs.mode ||
+      lhs.trajectory_id != rhs.trajectory_id ||
+      lhs.points.size() != rhs.points.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < lhs.points.size(); ++i) {
+    if (!sameTrajectoryPoint(lhs.points[i], rhs.points[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 double durationSec(const ros::Duration& duration) {
   return duration.toSec();
 }
@@ -290,33 +327,71 @@ bool TrajectoryCache::queueOrReplaceIfValid(const uav_msgs::Trajectory& trajecto
                                             const ros::Time& now,
                                             std::string* rejection_reason,
                                             bool* queued_pending) {
+  const auto action =
+      queueOrReplaceIfValidDetailed(trajectory, supported_frames, now, rejection_reason);
+  if (queued_pending != nullptr) {
+    *queued_pending = action == TrajectoryUpdateAction::kQueuedPending ||
+                      action == TrajectoryUpdateAction::kDuplicatePending;
+  }
+  return action != TrajectoryUpdateAction::kRejected;
+}
+
+TrajectoryUpdateAction TrajectoryCache::queueOrReplaceIfValidDetailed(
+    const uav_msgs::Trajectory& trajectory,
+    const std::vector<std::string>& supported_frames,
+    const ros::Time& now,
+    std::string* rejection_reason) {
   const auto validation = validateTrajectory(trajectory, supported_frames);
   if (!validation.valid) {
     if (rejection_reason != nullptr) {
       *rejection_reason = validation.reason;
     }
-    return false;
+    return TrajectoryUpdateAction::kRejected;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  if (has_trajectory_ && trajectory.trajectory_id == trajectory_.trajectory_id) {
+    if (sameTrajectoryContent(trajectory, trajectory_)) {
+      if (rejection_reason != nullptr) {
+        rejection_reason->clear();
+      }
+      return TrajectoryUpdateAction::kDuplicateActive;
+    }
+    if (rejection_reason != nullptr) {
+      *rejection_reason = "conflicting trajectory content for active trajectory_id";
+    }
+    return TrajectoryUpdateAction::kRejected;
+  }
+  if (has_pending_trajectory_ &&
+      trajectory.trajectory_id == pending_trajectory_.trajectory_id) {
+    if (sameTrajectoryContent(trajectory, pending_trajectory_)) {
+      if (rejection_reason != nullptr) {
+        rejection_reason->clear();
+      }
+      return TrajectoryUpdateAction::kDuplicatePending;
+    }
+    if (rejection_reason != nullptr) {
+      *rejection_reason = "conflicting trajectory content for pending trajectory_id";
+    }
+    return TrajectoryUpdateAction::kRejected;
+  }
+
   if (has_trajectory_ && trajectory.header.stamp > now) {
     pending_trajectory_ = trajectory;
     has_pending_trajectory_ = true;
-    if (queued_pending != nullptr) {
-      *queued_pending = true;
+    if (rejection_reason != nullptr) {
+      rejection_reason->clear();
     }
+    return TrajectoryUpdateAction::kQueuedPending;
   } else {
     trajectory_ = trajectory;
     has_trajectory_ = true;
     has_pending_trajectory_ = false;
-    if (queued_pending != nullptr) {
-      *queued_pending = false;
+    if (rejection_reason != nullptr) {
+      rejection_reason->clear();
     }
+    return TrajectoryUpdateAction::kAcceptedActive;
   }
-  if (rejection_reason != nullptr) {
-    rejection_reason->clear();
-  }
-  return true;
 }
 
 bool TrajectoryCache::get(uav_msgs::Trajectory* trajectory) const {
