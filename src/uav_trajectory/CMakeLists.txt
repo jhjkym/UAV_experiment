@@ -86,6 +86,7 @@ if(CATKIN_ENABLE_TESTING)
   add_rostest(test/trajectory_preview_integration.test)
   add_rostest(test/dynamic_trajectory_preview_integration.test)
   catkin_add_nosetests(../../scripts/analysis/test_trajectory_tracking_metrics.py)
+  catkin_add_nosetests(../../scripts/experiments/test_m0_c5b1_protocol.py)
 endif()
 
 install(TARGETS

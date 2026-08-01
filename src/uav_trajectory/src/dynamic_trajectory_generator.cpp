@@ -139,7 +139,8 @@ std::uint32_t deterministicId(const std::string& text) {
 bool validateConfig(const DynamicTrajectoryConfig& config, std::string* reason) {
   const std::vector<double> finite_values = {
       config.start_delay_sec, config.altitude_offset_m, config.duration_sec,
-      config.sample_period_sec, config.hold_end_sec, config.line_length_m,
+      config.sample_period_sec, config.hold_end_sec, config.initial_hold_sec,
+      config.initial_climb_duration_sec, config.post_climb_hold_sec, config.line_length_m,
       config.line_segment_duration_sec, config.circle_radius_m,
       config.circle_tangent_speed_mps, config.transition_duration_sec,
       config.figure8_amplitude_x_m, config.figure8_amplitude_y_m,
@@ -154,7 +155,9 @@ bool validateConfig(const DynamicTrajectoryConfig& config, std::string* reason) 
     return false;
   }
   if (config.start_delay_sec < 0.0 || config.duration_sec <= 0.0 ||
-      config.sample_period_sec <= 0.0 || config.hold_end_sec < 0.0) {
+      config.sample_period_sec <= 0.0 || config.hold_end_sec < 0.0 ||
+      config.initial_hold_sec < 0.0 || config.initial_climb_duration_sec < 0.0 ||
+      config.post_climb_hold_sec < 0.0) {
     *reason = "time parameters are outside valid ranges";
     return false;
   }
@@ -183,6 +186,9 @@ std::string makeTraceId(const DynamicTrajectoryConfig& config) {
       << "_dur" << formatDouble(config.duration_sec)
       << "_dt" << formatDouble(config.sample_period_sec)
       << "_z" << formatDouble(config.altitude_offset_m)
+      << "_hold0" << formatDouble(config.initial_hold_sec)
+      << "_climb" << formatDouble(config.initial_climb_duration_sec)
+      << "_holdz" << formatDouble(config.post_climb_hold_sec)
       << "_yaw" << yawModeName(config.yaw_mode);
   switch (config.trajectory_type) {
     case DynamicTrajectoryType::kLine:
@@ -246,6 +252,25 @@ std::vector<FlatSample> generateLineSamples(const DynamicTrajectoryConfig& confi
   const double z = start_pose.z + config.altitude_offset_m;
   const double tseg = config.line_segment_duration_sec * time_scale;
   double t = 0.0;
+  if (config.initial_hold_sec > 0.0) {
+    FlatSample initial;
+    initial.t = 0.0;
+    initial.x = start_pose.x;
+    initial.y = start_pose.y;
+    initial.z = start_pose.z;
+    samples.push_back(initial);
+    addHold(&samples, initial, config.initial_hold_sec * time_scale, config.sample_period_sec);
+    t += config.initial_hold_sec * time_scale;
+  }
+  if (config.initial_climb_duration_sec > 0.0) {
+    const double climb = config.initial_climb_duration_sec * time_scale;
+    addSmoothSegment(&samples, t, climb, start_pose.x, start_pose.y, start_pose.z,
+                     start_pose.x, start_pose.y, z, config.sample_period_sec);
+    t += climb;
+    addHold(&samples, samples.back(), config.post_climb_hold_sec * time_scale,
+            config.sample_period_sec);
+    t += config.post_climb_hold_sec * time_scale;
+  }
   addSmoothSegment(&samples, t, tseg, start_pose.x, start_pose.y, z,
                    start_pose.x + config.line_length_m, start_pose.y, z,
                    config.sample_period_sec);
@@ -271,6 +296,25 @@ std::vector<FlatSample> generateCircleSamples(const DynamicTrajectoryConfig& con
       std::max(config.duration_sec * time_scale - 2.0 * transition,
                kTwoPi * r / config.circle_tangent_speed_mps * time_scale);
   double t = 0.0;
+  if (config.initial_hold_sec > 0.0) {
+    FlatSample initial;
+    initial.t = 0.0;
+    initial.x = start_pose.x;
+    initial.y = start_pose.y;
+    initial.z = start_pose.z;
+    samples.push_back(initial);
+    addHold(&samples, initial, config.initial_hold_sec * time_scale, config.sample_period_sec);
+    t += config.initial_hold_sec * time_scale;
+  }
+  if (config.initial_climb_duration_sec > 0.0) {
+    const double climb = config.initial_climb_duration_sec * time_scale;
+    addSmoothSegment(&samples, t, climb, start_pose.x, start_pose.y, start_pose.z,
+                     start_pose.x, start_pose.y, z, config.sample_period_sec);
+    t += climb;
+    addHold(&samples, samples.back(), config.post_climb_hold_sec * time_scale,
+            config.sample_period_sec);
+    t += config.post_climb_hold_sec * time_scale;
+  }
   addSmoothSegment(&samples, t, transition, start_pose.x, start_pose.y, z,
                    start_pose.x + r, start_pose.y, z, config.sample_period_sec);
   t += transition;
@@ -333,6 +377,25 @@ std::vector<FlatSample> generateFigure8Samples(const DynamicTrajectoryConfig& co
   const double active = config.duration_sec * time_scale;
   const double transition = config.transition_duration_sec * time_scale;
   double t = 0.0;
+  if (config.initial_hold_sec > 0.0) {
+    FlatSample initial;
+    initial.t = 0.0;
+    initial.x = start_pose.x;
+    initial.y = start_pose.y;
+    initial.z = start_pose.z;
+    samples.push_back(initial);
+    addHold(&samples, initial, config.initial_hold_sec * time_scale, config.sample_period_sec);
+    t += config.initial_hold_sec * time_scale;
+  }
+  if (config.initial_climb_duration_sec > 0.0) {
+    const double climb = config.initial_climb_duration_sec * time_scale;
+    addSmoothSegment(&samples, t, climb, start_pose.x, start_pose.y, start_pose.z,
+                     start_pose.x, start_pose.y, z, config.sample_period_sec);
+    t += climb;
+    addHold(&samples, samples.back(), config.post_climb_hold_sec * time_scale,
+            config.sample_period_sec);
+    t += config.post_climb_hold_sec * time_scale;
+  }
   FlatSample first = figure8At(config, start_pose, 0.0, active);
   addSmoothSegment(&samples, t, transition, start_pose.x, start_pose.y, z,
                    first.x, first.y, z, config.sample_period_sec);

@@ -200,6 +200,196 @@ TEST(TrajectoryCache, InvalidNewTrajectoryDoesNotOverwriteCache) {
   EXPECT_EQ(cached.trajectory_id, 42u);
 }
 
+TEST(TrajectoryCache, FutureTrajectoryIsPendingUntilStartTime) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  bool queued = false;
+  auto active = makeTrajectory();
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(active, frames(), ros::Time(100.0),
+                                          &reason, &queued));
+  EXPECT_FALSE(queued);
+
+  auto pending = makeTrajectory();
+  pending.trajectory_id = 43;
+  pending.header.stamp = ros::Time(110.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(pending, frames(), ros::Time(105.0),
+                                          &reason, &queued));
+  EXPECT_TRUE(queued);
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(109.9), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 42u);
+
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(110.0), &cached, &promoted));
+  EXPECT_TRUE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 43u);
+
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(110.1), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 43u);
+}
+
+TEST(TrajectoryCache, ImmediateTrajectoryReplacesPendingTrajectory) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  bool queued = false;
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(makeTrajectory(), frames(), ros::Time(100.0),
+                                          &reason, &queued));
+  auto pending = makeTrajectory();
+  pending.trajectory_id = 43;
+  pending.header.stamp = ros::Time(120.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(pending, frames(), ros::Time(101.0),
+                                          &reason, &queued));
+  EXPECT_TRUE(queued);
+
+  auto immediate = makeTrajectory();
+  immediate.trajectory_id = 44;
+  immediate.header.stamp = ros::Time(101.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(immediate, frames(), ros::Time(101.0),
+                                          &reason, &queued));
+  EXPECT_FALSE(queued);
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(120.0), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 44u);
+}
+
+TEST(TrajectoryCache, NewPendingReplacesOldPending) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  bool queued = false;
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(makeTrajectory(), frames(), ros::Time(100.0),
+                                          &reason, &queued));
+  auto first_pending = makeTrajectory();
+  first_pending.trajectory_id = 43;
+  first_pending.header.stamp = ros::Time(120.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(first_pending, frames(), ros::Time(101.0),
+                                          &reason, &queued));
+  EXPECT_TRUE(queued);
+
+  auto second_pending = makeTrajectory();
+  second_pending.trajectory_id = 44;
+  second_pending.header.stamp = ros::Time(115.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(second_pending, frames(), ros::Time(102.0),
+                                          &reason, &queued));
+  EXPECT_TRUE(queued);
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(115.0), &cached, &promoted));
+  EXPECT_TRUE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 44u);
+}
+
+TEST(TrajectoryCache, InvalidPendingDoesNotDestroyActiveOrPending) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  bool queued = false;
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(makeTrajectory(), frames(), ros::Time(100.0),
+                                          &reason, &queued));
+  auto pending = makeTrajectory();
+  pending.trajectory_id = 43;
+  pending.header.stamp = ros::Time(110.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(pending, frames(), ros::Time(101.0),
+                                          &reason, &queued));
+  EXPECT_TRUE(queued);
+
+  auto invalid = makeTrajectory();
+  invalid.trajectory_id = 99;
+  invalid.header.stamp = ros::Time(105.0);
+  invalid.points.clear();
+  EXPECT_FALSE(cache.queueOrReplaceIfValid(invalid, frames(), ros::Time(102.0),
+                                           &reason, &queued));
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(109.0), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 42u);
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(110.0), &cached, &promoted));
+  EXPECT_TRUE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 43u);
+}
+
+TEST(TrajectoryCache, TimeBackwardsDoesNotPromoteFuturePending) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  bool queued = false;
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(makeTrajectory(), frames(), ros::Time(100.0),
+                                          &reason, &queued));
+  auto pending = makeTrajectory();
+  pending.trajectory_id = 43;
+  pending.header.stamp = ros::Time(110.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(pending, frames(), ros::Time(105.0),
+                                          &reason, &queued));
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(104.0), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 42u);
+}
+
+TEST(TrajectoryCache, ActiveMayFinishWhilePendingWaits) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  bool queued = false;
+  auto active = makeTrajectory();
+  active.header.stamp = ros::Time(100.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(active, frames(), ros::Time(100.0),
+                                          &reason, &queued));
+  auto pending = makeTrajectory();
+  pending.trajectory_id = 43;
+  pending.header.stamp = ros::Time(110.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(pending, frames(), ros::Time(101.0),
+                                          &reason, &queued));
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(105.0), &cached, &promoted));
+  EXPECT_FALSE(promoted);
+  EXPECT_EQ(cached.trajectory_id, 42u);
+  const auto sample = uav_trajectory::sampleTrajectory(cached, ros::Time(105.0),
+                                                       ros::Time(104.0));
+  EXPECT_TRUE(sample.finished);
+}
+
+TEST(TrajectoryCache, PendingFirstPointCanBeContinuousWithActiveOutput) {
+  uav_trajectory::TrajectoryCache cache;
+  std::string reason;
+  bool queued = false;
+  auto active = makeTrajectory();
+  active.header.stamp = ros::Time(100.0);
+  active.points.back() = active.points.front();
+  active.points.back().time_from_start = ros::Duration(60.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(active, frames(), ros::Time(100.0),
+                                          &reason, &queued));
+  auto pending = makeTrajectory();
+  pending.trajectory_id = 43;
+  pending.header.stamp = ros::Time(105.0);
+  pending.points.front() = active.points.front();
+  pending.points.front().time_from_start = ros::Duration(0.0);
+  ASSERT_TRUE(cache.queueOrReplaceIfValid(pending, frames(), ros::Time(104.0),
+                                          &reason, &queued));
+
+  uav_msgs::Trajectory cached;
+  bool promoted = false;
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(104.9), &cached, &promoted));
+  const auto before = uav_trajectory::sampleTrajectory(cached, ros::Time(104.9),
+                                                       ros::Time(104.8));
+  ASSERT_TRUE(cache.getActiveForTime(ros::Time(105.0), &cached, &promoted));
+  const auto after = uav_trajectory::sampleTrajectory(cached, ros::Time(105.0),
+                                                      ros::Time(0.0));
+  EXPECT_TRUE(promoted);
+  EXPECT_NEAR(after.point.position.x, before.point.position.x, kTolerance);
+  EXPECT_NEAR(after.point.velocity.x, before.point.velocity.x, kTolerance);
+  EXPECT_NEAR(after.point.acceleration.x, before.point.acceleration.x, kTolerance);
+}
+
 TEST(TrajectoryPreview, MakePreviewCarriesFrameIdAndStateFreshness) {
   const auto trajectory = makeTrajectory();
   const auto sample =

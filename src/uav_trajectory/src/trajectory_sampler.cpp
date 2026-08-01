@@ -278,6 +278,41 @@ bool TrajectoryCache::replaceIfValid(const uav_msgs::Trajectory& trajectory,
   std::lock_guard<std::mutex> lock(mutex_);
   trajectory_ = trajectory;
   has_trajectory_ = true;
+  has_pending_trajectory_ = false;
+  if (rejection_reason != nullptr) {
+    rejection_reason->clear();
+  }
+  return true;
+}
+
+bool TrajectoryCache::queueOrReplaceIfValid(const uav_msgs::Trajectory& trajectory,
+                                            const std::vector<std::string>& supported_frames,
+                                            const ros::Time& now,
+                                            std::string* rejection_reason,
+                                            bool* queued_pending) {
+  const auto validation = validateTrajectory(trajectory, supported_frames);
+  if (!validation.valid) {
+    if (rejection_reason != nullptr) {
+      *rejection_reason = validation.reason;
+    }
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (has_trajectory_ && trajectory.header.stamp > now) {
+    pending_trajectory_ = trajectory;
+    has_pending_trajectory_ = true;
+    if (queued_pending != nullptr) {
+      *queued_pending = true;
+    }
+  } else {
+    trajectory_ = trajectory;
+    has_trajectory_ = true;
+    has_pending_trajectory_ = false;
+    if (queued_pending != nullptr) {
+      *queued_pending = false;
+    }
+  }
   if (rejection_reason != nullptr) {
     rejection_reason->clear();
   }
@@ -286,6 +321,27 @@ bool TrajectoryCache::replaceIfValid(const uav_msgs::Trajectory& trajectory,
 
 bool TrajectoryCache::get(uav_msgs::Trajectory* trajectory) const {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (!has_trajectory_) {
+    return false;
+  }
+  *trajectory = trajectory_;
+  return true;
+}
+
+bool TrajectoryCache::getActiveForTime(const ros::Time& now,
+                                       uav_msgs::Trajectory* trajectory,
+                                       bool* promoted_pending) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (has_pending_trajectory_ && pending_trajectory_.header.stamp <= now) {
+    trajectory_ = pending_trajectory_;
+    has_trajectory_ = true;
+    has_pending_trajectory_ = false;
+    if (promoted_pending != nullptr) {
+      *promoted_pending = true;
+    }
+  } else if (promoted_pending != nullptr) {
+    *promoted_pending = false;
+  }
   if (!has_trajectory_) {
     return false;
   }

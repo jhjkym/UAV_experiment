@@ -28,6 +28,10 @@ class DynamicTrajectoryPublisherNode {
     private_nh_.param<double>("duration_sec", config.duration_sec, 20.0);
     private_nh_.param<double>("sample_period_sec", config.sample_period_sec, 0.05);
     private_nh_.param<double>("hold_end_sec", config.hold_end_sec, 5.0);
+    private_nh_.param<double>("initial_hold_sec", config.initial_hold_sec, 0.0);
+    private_nh_.param<double>("initial_climb_duration_sec",
+                              config.initial_climb_duration_sec, 0.0);
+    private_nh_.param<double>("post_climb_hold_sec", config.post_climb_hold_sec, 0.0);
     private_nh_.param<std::string>("yaw_mode", yaw_mode, "fixed");
     private_nh_.param<double>("line_length_m", config.line_length_m, 1.0);
     private_nh_.param<double>("line_segment_duration_sec",
@@ -75,25 +79,31 @@ class DynamicTrajectoryPublisherNode {
     const double rate = std::isfinite(republish_rate_hz_) && republish_rate_hz_ > 0.0
                             ? republish_rate_hz_
                             : 0.2;
-    timer_ = nh_.createTimer(ros::Duration(1.0 / rate),
-                             &DynamicTrajectoryPublisherNode::timerCallback, this,
-                             false, true);
-
     ROS_INFO("dynamic_trajectory_publisher_node generated %s id=%u points=%zu "
              "time_scale=%.3f max_v=%.3f max_a=%.3f max_j=%.3f topic=%s",
              trace_id_.c_str(), trajectory_.trajectory_id, trajectory_.points.size(),
              result.time_scale, result.measured.max_velocity_mps,
              result.measured.max_acceleration_mps2, result.measured.max_jerk_mps3,
              trajectory_topic_.c_str());
+    if (publish_once_) {
+      publishTrajectory();
+      ros::Duration(0.5).sleep();
+      ros::shutdown();
+    } else {
+      timer_ = nh_.createTimer(ros::Duration(1.0 / rate),
+                               &DynamicTrajectoryPublisherNode::timerCallback, this,
+                               false, true);
+    }
   }
 
  private:
   void timerCallback(const ros::TimerEvent&) {
+    publishTrajectory();
+  }
+
+  void publishTrajectory() {
     trajectory_.header.stamp = ros::Time::now() + ros::Duration(start_delay_sec_);
     publisher_.publish(trajectory_);
-    if (publish_once_) {
-      timer_.stop();
-    }
   }
 
   ros::NodeHandle nh_;

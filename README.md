@@ -63,6 +63,12 @@ M0-C5A adds:
 - Dynamic constraint validation with whole-trajectory time scaling.
 - Offline tracking metrics for CSV or structured JSON time series.
 
+M0-C5B1 adds a guarded PX4 SITL-only smooth line tracking experiment. It reuses
+the M0-C5A dynamic trajectory generator, records outputs under
+`/tmp/uav_m0_c5b1/`, and must not be run against real hardware. R1 uses a
+two-stage protocol: prestream/OFFBOARD/arming on a fixed ground-hold trajectory,
+then dynamic flight trajectory publication only after `armed=true`.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash

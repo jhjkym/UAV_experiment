@@ -87,3 +87,14 @@ M0-C5A dynamic trajectory baseline:
   library only.
 - This stage is offline: no PX4, Gazebo, MAVROS, arming, OFFBOARD, or landing
   execution is part of the baseline.
+
+M0-C5B1 SITL line tracking:
+- Uses PX4 v1.14.3 SITL, Gazebo Classic, UDP MAVROS, `uav_px4_bridge`,
+  `uav_trajectory`, and `uav_offboard`.
+- Flight service calls exist only in
+  `scripts/experiments/m0_c5b1_sitl_line.py` after explicit SITL and
+  `UAV_ALLOW_SITL_FLIGHT=YES` checks.
+- R1 publishes a ground-hold trajectory for prestream, OFFBOARD, and arming,
+  then starts the dynamic trajectory publisher only after `armed=true`; this
+  keeps trajectory generation outside production nodes.
+- Run artifacts are written to `/tmp/uav_m0_c5b1/` and are not tracked by Git.

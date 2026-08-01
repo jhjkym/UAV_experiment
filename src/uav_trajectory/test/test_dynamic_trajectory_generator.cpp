@@ -108,6 +108,76 @@ TEST(DynamicLine, StartEndAndC2Segments) {
   }
 }
 
+TEST(DynamicLine, OptionalInitialClimbReachesAltitudeBeforeLine) {
+  auto config = baseConfig(uav_trajectory::DynamicTrajectoryType::kLine);
+  config.initial_climb_duration_sec = 5.0;
+  const auto start = startPose();
+  const auto result = uav_trajectory::generateDynamicTrajectory(config, start);
+  ASSERT_TRUE(result.valid) << result.reason;
+  const auto& trajectory = result.trajectory;
+  EXPECT_NEAR(trajectory.points.front().position.x, start.x, 1e-9);
+  EXPECT_NEAR(trajectory.points.front().position.y, start.y, 1e-9);
+  EXPECT_NEAR(trajectory.points.front().position.z, start.z, 1e-9);
+
+  auto climb_end = std::min_element(
+      trajectory.points.begin(), trajectory.points.end(),
+      [&config](const auto& lhs, const auto& rhs) {
+        return std::abs(lhs.time_from_start.toSec() - config.initial_climb_duration_sec) <
+               std::abs(rhs.time_from_start.toSec() - config.initial_climb_duration_sec);
+      });
+  ASSERT_NE(climb_end, trajectory.points.end());
+  EXPECT_NEAR(climb_end->position.x, start.x, 1e-6);
+  EXPECT_NEAR(climb_end->position.y, start.y, 1e-6);
+  EXPECT_NEAR(climb_end->position.z, start.z + config.altitude_offset_m, 1e-6);
+  EXPECT_NEAR(speed(*climb_end), 0.0, 1e-6);
+  EXPECT_NEAR(accel(*climb_end), 0.0, 1e-6);
+}
+
+TEST(DynamicLine, InitialHoldKeepsGroundTarget) {
+  auto config = baseConfig(uav_trajectory::DynamicTrajectoryType::kLine);
+  config.initial_hold_sec = 1.0;
+  config.initial_climb_duration_sec = 5.0;
+  const auto start = startPose();
+  const auto result = uav_trajectory::generateDynamicTrajectory(config, start);
+  ASSERT_TRUE(result.valid) << result.reason;
+  for (const auto& point : result.trajectory.points) {
+    if (point.time_from_start.toSec() > config.initial_hold_sec + 1e-9) {
+      break;
+    }
+    EXPECT_NEAR(point.position.x, start.x, 1e-9);
+    EXPECT_NEAR(point.position.y, start.y, 1e-9);
+    EXPECT_NEAR(point.position.z, start.z, 1e-9);
+    EXPECT_NEAR(speed(point), 0.0, 1e-9);
+    EXPECT_NEAR(accel(point), 0.0, 1e-9);
+  }
+}
+
+TEST(DynamicLine, PostClimbHoldKeepsAltitudeBeforeLine) {
+  auto config = baseConfig(uav_trajectory::DynamicTrajectoryType::kLine);
+  config.initial_hold_sec = 1.0;
+  config.initial_climb_duration_sec = 5.0;
+  config.post_climb_hold_sec = 2.0;
+  const auto start = startPose();
+  const auto result = uav_trajectory::generateDynamicTrajectory(config, start);
+  ASSERT_TRUE(result.valid) << result.reason;
+  const double hold_start = config.initial_hold_sec + config.initial_climb_duration_sec;
+  const double hold_end = hold_start + config.post_climb_hold_sec;
+  bool saw_hold_sample = false;
+  for (const auto& point : result.trajectory.points) {
+    const double t = point.time_from_start.toSec();
+    if (t + 1e-9 < hold_start || t > hold_end + 1e-9) {
+      continue;
+    }
+    saw_hold_sample = true;
+    EXPECT_NEAR(point.position.x, start.x, 1e-9);
+    EXPECT_NEAR(point.position.y, start.y, 1e-9);
+    EXPECT_NEAR(point.position.z, start.z + config.altitude_offset_m, 1e-9);
+    EXPECT_NEAR(speed(point), 0.0, 1e-9);
+    EXPECT_NEAR(accel(point), 0.0, 1e-9);
+  }
+  EXPECT_TRUE(saw_hold_sample);
+}
+
 TEST(DynamicCircle, RadiusClosureVelocityAndAcceleration) {
   auto config = baseConfig(uav_trajectory::DynamicTrajectoryType::kCircle);
   config.hold_end_sec = 0.0;

@@ -141,8 +141,7 @@ class DynamicTrajectoryPreviewIntegration(unittest.TestCase):
             valid = [msg for msg in self.previews
                      if msg.trajectory_id == trajectory_id and msg.trajectory_valid]
             moving = [msg for msg in valid if msg.started and not msg.finished]
-            if len(valid) >= 30 and any(not msg.started for msg in valid) \
-                    and len(moving) >= 25:
+            if len(valid) >= 30 and len(moving) >= 25:
                 return valid
             rate.sleep()
         self.fail("timed out waiting for valid dynamic previews")

@@ -57,12 +57,24 @@ class TrajectoryCache {
                       const std::vector<std::string>& supported_frames,
                       std::string* rejection_reason);
 
+  bool queueOrReplaceIfValid(const uav_msgs::Trajectory& trajectory,
+                             const std::vector<std::string>& supported_frames,
+                             const ros::Time& now,
+                             std::string* rejection_reason,
+                             bool* queued_pending);
+
   bool get(uav_msgs::Trajectory* trajectory) const;
+
+  bool getActiveForTime(const ros::Time& now,
+                        uav_msgs::Trajectory* trajectory,
+                        bool* promoted_pending);
 
  private:
   mutable std::mutex mutex_;
   bool has_trajectory_ = false;
+  bool has_pending_trajectory_ = false;
   uav_msgs::Trajectory trajectory_;
+  uav_msgs::Trajectory pending_trajectory_;
 };
 
 }  // namespace uav_trajectory

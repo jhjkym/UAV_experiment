@@ -67,7 +67,7 @@ class OffboardAdapterDryRunTest(unittest.TestCase):
         rate = rospy.Rate(30)
         while rospy.Time.now() < deadline and not rospy.is_shutdown():
             self.publish_inputs()
-            if self.targets and self.statuses:
+            if self.targets and self.statuses and self.statuses[-1].state_name == "READY_DRY_RUN":
                 return
             rate.sleep()
         self.fail("timed out waiting for dry-run outputs")

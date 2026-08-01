@@ -53,6 +53,20 @@ Line:
 Each segment uses the five-order time scaling above. Defaults are `L=1.0 m`
 and `line_segment_duration_sec=5.0`.
 
+Optional line, circle, and figure-eight prefaces support SITL experiment
+protocols without moving trajectory mathematics into shell scripts:
+
+```yaml
+initial_hold_sec: 0.0
+initial_climb_duration_sec: 0.0
+post_climb_hold_sec: 0.0
+```
+
+When enabled, the generated trajectory first holds the supplied start pose,
+then applies a fifth-order vertical climb by `altitude_offset_m`, then holds at
+the climbed altitude before horizontal motion begins. Position, velocity, and
+acceleration are continuous at each boundary.
+
 Circle:
 
 ```text
@@ -118,6 +132,21 @@ circle, and figure-eight `uav_msgs/Trajectory` messages, and validates
 trajectory flags, before/during/after state behavior, finite fields, position
 and velocity finite-difference consistency, yaw continuity, quaternion
 normalization by yaw construction, and absence of MAVROS setpoint publishers.
+
+If a valid replacement trajectory has a future `Trajectory.header.stamp` while
+another trajectory is active, `trajectory_preview_node` queues it as pending and
+continues sampling the active trajectory until the new start time. This prevents
+a one-second handoff gap from producing a not-started preview during guarded
+SITL experiments.
+
+The pending handoff path logs the active trajectory ID, pending trajectory ID,
+planned switch time, actual switch time, and position/velocity/acceleration
+jumps at promotion. M0-C5B1-R1A validated this behavior in a ground-only SITL
+rehearsal without arming, OFFBOARD, takeoff, or landing commands. The measured
+handoff at `/tmp/uav_m0_c5b1/handoff_20260801_125214` switched once with
+`0.026675 s` timing error, `0.000000001 m` position jump, zero velocity and
+acceleration jump, `30.003862 Hz` average setpoint rate, no adapter FAULT, no
+OFFBOARD state, and `armed=false` throughout.
 
 ## Tracking Metrics
 

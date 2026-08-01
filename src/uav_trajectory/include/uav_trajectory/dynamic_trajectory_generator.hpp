@@ -28,6 +28,9 @@ struct DynamicTrajectoryConfig {
   double duration_sec = 20.0;
   double sample_period_sec = 0.05;
   double hold_end_sec = 5.0;
+  double initial_hold_sec = 0.0;
+  double initial_climb_duration_sec = 0.0;
+  double post_climb_hold_sec = 0.0;
   YawMode yaw_mode = YawMode::kFixed;
 
   double line_length_m = 1.0;

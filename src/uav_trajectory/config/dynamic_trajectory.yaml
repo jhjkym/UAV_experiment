@@ -5,6 +5,9 @@ altitude_offset_m: 1.0
 duration_sec: 20.0
 sample_period_sec: 0.05
 hold_end_sec: 5.0
+initial_hold_sec: 0.0
+initial_climb_duration_sec: 0.0
+post_climb_hold_sec: 0.0
 yaw_mode: fixed
 
 line_length_m: 1.0
