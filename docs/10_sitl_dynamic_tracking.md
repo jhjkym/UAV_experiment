@@ -396,6 +396,115 @@ P95 delivery latency: 2.041833 s
 The landing reserve flight acceptance is still pending a new explicit SITL
 authorization and run.
 
+M0-C5B1-R2A-FINAL is preserved as:
+
+```text
+/tmp/uav_m0_c5b1/run_20260801_180048
+```
+
+The run completed Stage A ground hold, OFFBOARD confirmation, and arming. After
+arming, `dynamic_trajectory_publisher_node` exited with `-11` before writing
+any log line. The dynamic trajectory was not published to `/uav/trajectory`,
+was not observed by preview, and the run did not enter pending handoff, CLIMB,
+LINE_FORWARD, LINE_REVERSE, LINE_RETURN, CENTER_HOLD, or LANDING_PREP. The
+exception path requested `AUTO.LAND`; the bag observes `mode=AUTO.LAND`, but
+the bag ended with `armed=true`. Final disarm was not confirmed, so the run is
+not recorded as safely completed. This was not a pending handoff failure and did
+not validate the landing reserve lifecycle.
+
+M0-C5B1-R2A-D2 is a non-flight investigation and fix. It did not start PX4,
+Gazebo, MAVROS, the offboard output chain, arming, mode changes, `AUTO.LAND`,
+or any flight. The exact publisher arguments from the failed run were
+reproduced under gdb with only `roscore`, `trajectory_preview_node`, and
+`dynamic_trajectory_publisher_node`. The backtrace showed:
+
+```text
+SIGSEGV in addHold(...)
+dynamic_trajectory_generator.cpp:73
+generateLineSamples(... hold_end_sec=70.0 ...)
+DynamicTrajectoryPublisherNode::DynamicTrajectoryPublisherNode(...)
+```
+
+The root cause was a dangling reference in the dynamic trajectory generator:
+`generateLineSamples()` passed `samples.back()` by reference into `addHold()`,
+and `addHold()` appended samples to the same vector. The 60 second landing
+reserve made the hold long enough for vector reallocation, invalidating the
+reference before later loop iterations copied it. Earlier D1 delivery stress
+used shorter dynamic trajectories and did not cover this reserve-length
+`hold_end_sec=70.0` path.
+
+The fix copies the hold anchor at `addHold()` entry before appending to the
+vector. A regression test now generates the R2A exact line trajectory with
+`initial_hold_sec=1.0`, `initial_climb_duration_sec=8.0`,
+`post_climb_hold_sec=2.0`, three 5 second line segments, and
+`hold_end_sec=70.0`; it verifies the final hold sample remains at the center
+target with zero velocity and zero acceleration.
+
+D2 also changes the experiment abort lifecycle. If any exception occurs after
+`armed=true` has ever been observed, the script records the original failure,
+keeps the rosbag running, requests `AUTO.LAND`, waits for AUTO.LAND mode when
+available, closes the output gate only after AUTO.LAND confirmation, then waits
+for `armed=false` to be observed continuously for at least 2 seconds before
+stopping bag and local processes. If disarm is not confirmed before timeout,
+`summary.json` records `final_disarm_confirmed=false`, the last mode and armed
+state are preserved, and no forced disarm is issued.
+
+D2 verification evidence:
+
+```text
+gdb before fix: reproduced SIGSEGV at dynamic_trajectory_generator.cpp:73
+gdb after fix: exact publisher command exited normally and published 3 repeats
+debug exact parameters: 100/100 successful publisher exits, SIGSEGV=0
+D1 delivery stress rerun: 75/75 successful, wrong trajectory IDs=0,
+  unexpected duplicate switches=0, NaN/Inf=0, residual ROS processes=0
+```
+
+An ASan/UBSan profile was built with a clean `/opt/ros/noetic` extend, but
+running the ROS publisher node under ASan in this WSL/ROS environment produced
+only repeated `AddressSanitizer:DEADLYSIGNAL` lines before publisher logging,
+without a usable stack trace. That sanitizer node run is not treated as passing
+evidence. The generator regression and gdb backtrace remain the root-cause and
+fix evidence for the original `-11`.
+
+M0-C5B1-R2A-D2A qualified the sanitizer evidence scope without starting PX4,
+Gazebo, MAVROS, OFFBOARD, arming, mode changes, real `AUTO.LAND`, or any
+flight component. The ASan positive control produced a source-line
+`heap-buffer-overflow` report. The negative control exits cleanly outside the
+managed command sandbox; inside the sandbox, clean ASan exits can produce
+repeated no-stack `DEADLYSIGNAL` output, so that behavior is classified as a
+sanitizer runtime integration limitation rather than project evidence.
+
+The fixed pure C++ generator path was then exercised directly under ASan/UBSan
+with the R2A exact parameters:
+
+```text
+trajectory_type=line
+initial_hold_sec=1.0
+initial_climb_duration_sec=8.0
+post_climb_hold_sec=2.0
+line_segment_duration_sec=5.0
+hold_end_sec=70.0
+```
+
+The harness generated the full 70 second reserve trajectory 1000 consecutive
+times with ASan errors=0 and UBSan errors=0. A temporary non-repository copy of
+the old reference-passing behavior failed under ASan with `heap-use-after-free`
+at the `addHold()` copy from the dangling hold anchor, proving the regression
+test can distinguish the original defect from the fixed path.
+
+The ROS publisher node was also probed in the ASan profile without flight
+components. With no subscriber it exited nonzero by the expected
+`publish_once_result exit_reason=no_subscriber` path. With `roscore` and
+`trajectory_preview_node`, the R2A exact publisher parameters exited 0 after
+subscriber detection and three repeated publishes. The earlier no-stack
+`DEADLYSIGNAL` output is therefore recorded as
+`ROS_SANITIZER_INTEGRATION_FAILURE` for the managed/sandboxed node startup
+environment, not as evidence that a project memory error remains.
+
+D2A does not change the M0-C5B1 status: the generator crash and abort recovery
+fixes are ready for commit, but M0-C5B1 still requires a new final PX4 SITL
+line-tracking flight revalidation under explicit one-time authorization.
+
 ## First-Run Acceptance
 
 The first M0-C5B1 line tracking run is accepted only if:

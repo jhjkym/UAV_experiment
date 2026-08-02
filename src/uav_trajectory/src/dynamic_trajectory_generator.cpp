@@ -68,16 +68,18 @@ void addHold(std::vector<FlatSample>* samples, const FlatSample& last,
   if (hold_sec <= 0.0) {
     return;
   }
-  const double end = last.t + hold_sec;
-  for (double t = last.t + sample_period; t < end - 0.5 * sample_period; t += sample_period) {
-    FlatSample sample = last;
+  const FlatSample hold_anchor = last;
+  const double end = hold_anchor.t + hold_sec;
+  for (double t = hold_anchor.t + sample_period; t < end - 0.5 * sample_period;
+       t += sample_period) {
+    FlatSample sample = hold_anchor;
     sample.t = t;
     sample.vx = sample.vy = sample.vz = 0.0;
     sample.ax = sample.ay = sample.az = 0.0;
     sample.yaw_rate = 0.0;
     samples->push_back(sample);
   }
-  FlatSample end_sample = last;
+  FlatSample end_sample = hold_anchor;
   end_sample.t = end;
   end_sample.vx = end_sample.vy = end_sample.vz = 0.0;
   end_sample.ax = end_sample.ay = end_sample.az = 0.0;

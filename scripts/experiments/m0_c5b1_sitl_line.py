@@ -259,6 +259,9 @@ class Experiment:
     self.trajectory_end_time: Optional[float] = None
     self.adapter_fault_first_at: Optional[float] = None
     self.center_hold_completed = False
+    self.observed_armed_true = False
+    self.final_disarm_confirmed = False
+    self.abort_recovery: Dict[str, object] = {}
 
   def start_process(self, name: str, command: str, cwd: Path) -> None:
     log_path = self.run_dir / f"{name}.log"
@@ -382,6 +385,8 @@ class Experiment:
     previous = self.state.mavros_state
     self.state.mavros_state = msg
     now = rospy.Time.now().to_sec()
+    if msg.armed:
+      self.observed_armed_true = True
     if msg.mode == "OFFBOARD":
       self.offboard_last_observed_at = now
     if msg.mode == "AUTO.LAND" and self.land_mode_first_observed_at is None:
@@ -706,8 +711,10 @@ class Experiment:
         if self.state.mavros_state is not None and self.state.mavros_state.armed == arm:
           if arm and self.arm_confirm_time is None:
             self.arm_confirm_time = time.time()
+            self.observed_armed_true = True
           if not arm:
             self.disarm_time = time.time()
+            self.final_disarm_confirmed = True
           return
         time.sleep(0.1)
     raise RuntimeError(f"arming state {arm} was not confirmed")
@@ -868,21 +875,145 @@ class Experiment:
                   self.state.offboard_status is not None and
                   not self.state.offboard_status.output_active and
                   self.state.offboard_status.state_name != "FAULT", 3.0, 0.05)
-    deadline = time.time() + 90.0
-    while time.time() < deadline:
-      if self.state.mavros_state is not None and not self.state.mavros_state.armed:
-        self.disarm_time = time.time()
-        self.land_complete_time = self.disarm_time
-        self.set_phase("COMPLETE")
-        self.phase.finish(rospy.Time.now().to_sec())
-        return
-      time.sleep(0.2)
+    if self.wait_for_disarm_stable(2.0, 90.0):
+      self.set_phase("COMPLETE")
+      self.phase.finish(rospy.Time.now().to_sec())
+      return
     if self.state.uav_state is not None:
       z = self.state.uav_state.pose.position.z
       vz = self.state.uav_state.twist.linear.z
       if self.start_position is not None and abs(z - self.start_position[2]) < 0.15 and abs(vz) < 0.1:
         raise RuntimeError("vehicle landed but PX4 did not auto-disarm; refusing forced in-air disarm")
     raise RuntimeError("vehicle did not disarm after AUTO.LAND")
+
+  def was_ever_armed(self) -> bool:
+    return bool(
+        self.observed_armed_true or
+        self.arm_confirm_time is not None or
+        (self.state.mavros_state is not None and self.state.mavros_state.armed))
+
+  def wait_for_disarm_stable(self, stable_sec: float = 2.0, timeout: float = 90.0) -> bool:
+    deadline = time.time() + timeout
+    stable_start: Optional[float] = None
+    while time.time() < deadline and not rospy.is_shutdown():
+      state = self.state.mavros_state
+      if state is not None and not state.armed:
+        now = time.time()
+        if stable_start is None:
+          stable_start = now
+          if self.disarm_time is None:
+            self.disarm_time = now
+        if now - stable_start >= stable_sec:
+          self.land_complete_time = self.disarm_time
+          self.final_disarm_confirmed = True
+          return True
+      else:
+        stable_start = None
+      time.sleep(0.2)
+    return False
+
+  def close_output_gate_after_land_confirm(self, recovery: Dict[str, object]) -> None:
+    state = self.state.mavros_state
+    mode = state.mode if state is not None else ""
+    if not can_close_output_gate(mode, self.land_confirm_time is not None):
+      recovery["output_gate_closed"] = False
+      recovery["output_gate_close_skipped_reason"] = (
+          f"mode={mode or 'unknown'} land_confirmed={self.land_confirm_time is not None}")
+      return
+    try:
+      self.call_set_output(False)
+      recovery["output_gate_closed"] = self.output_disabled_time is not None
+    except Exception as exc:
+      self.output_gate_close_error = str(exc)
+      recovery["output_gate_closed"] = False
+      recovery["output_gate_close_error"] = str(exc)
+
+  def write_failure_summary(self, original_error: str,
+                            recovery: Optional[Dict[str, object]] = None) -> None:
+    metrics: Dict[str, object] = {
+        "abort_reason": self.abort_reason,
+        "final_armed": self.state.mavros_state.armed if self.state.mavros_state else None,
+        "final_mode": self.state.mavros_state.mode if self.state.mavros_state else None,
+        "final_disarm_confirmed": self.final_disarm_confirmed,
+        "service_calls": self.service_calls,
+    }
+    try:
+      metrics.update(self.compute_metrics(0.0))
+    except Exception as exc:
+      metrics["metrics_error"] = str(exc)
+    summary = {
+        "run_dir": str(self.run_dir),
+        "status": "failed",
+        "original_error": original_error,
+        "abort_recovery": recovery or self.abort_recovery,
+        "flight_trajectory_id": self.flight_trajectory_id,
+        "flight_trajectory_stamp": self.flight_trajectory_stamp,
+        "land_request_time": self.land_request_time,
+        "land_confirm_time": self.land_confirm_time,
+        "land_service_call_started_at": self.land_service_call_started_at,
+        "land_service_response_at": self.land_service_response_at,
+        "land_mode_first_observed_at": self.land_mode_first_observed_at,
+        "offboard_last_observed_at": self.offboard_last_observed_at,
+        "output_gate_close_requested_at": self.output_gate_close_requested_at,
+        "output_disabled_time": self.output_disabled_time,
+        "disarm_at": self.disarm_time,
+        "phase_times": self.phase.summary(),
+        "mavros_connected": self.state.mavros_state.connected if self.state.mavros_state else None,
+        "mavros_armed": self.state.mavros_state.armed if self.state.mavros_state else None,
+        "mavros_mode": self.state.mavros_state.mode if self.state.mavros_state else None,
+        "offboard_status": self.state.offboard_status.state_name if self.state.offboard_status else None,
+        "metrics": metrics,
+    }
+    (self.run_dir / "abort_recovery.json").write_text(
+        json.dumps(recovery or self.abort_recovery, indent=2, sort_keys=True), encoding="utf-8")
+    (self.run_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+
+  def recover_after_failure(self, original_error: str) -> Dict[str, object]:
+    if self.abort_reason is None:
+      self.abort_reason = original_error
+    recovery: Dict[str, object] = {
+        "original_error": original_error,
+        "started_at": time.time(),
+        "ever_armed": self.was_ever_armed(),
+        "land_requested": False,
+        "land_confirmed": False,
+        "output_gate_closed": False,
+        "final_disarm_confirmed": False,
+    }
+    self.abort_recovery = recovery
+    try:
+      self.set_phase("ABORT")
+    except Exception as exc:
+      recovery["phase_error"] = str(exc)
+    if not self.was_ever_armed():
+      self.write_failure_summary(original_error, recovery)
+      return recovery
+    try:
+      self.call_mode("AUTO.LAND", require_mode=False)
+      recovery["land_requested"] = self.land_request_time is not None
+    except Exception as exc:
+      recovery["land_request_error"] = str(exc)
+    mode_deadline = time.time() + 20.0
+    while time.time() < mode_deadline and not rospy.is_shutdown():
+      state = self.state.mavros_state
+      if state is not None and state.mode == "AUTO.LAND":
+        if self.land_confirm_time is None:
+          self.land_confirm_time = time.time()
+        recovery["land_confirmed"] = True
+        break
+      time.sleep(0.2)
+    recovery["mode_after_land_request"] = (
+        self.state.mavros_state.mode if self.state.mavros_state else None)
+    if recovery["land_confirmed"]:
+      self.close_output_gate_after_land_confirm(recovery)
+    disarm_confirmed = self.wait_for_disarm_stable(2.0, 120.0)
+    recovery["final_disarm_confirmed"] = disarm_confirmed
+    recovery["final_armed"] = self.state.mavros_state.armed if self.state.mavros_state else None
+    recovery["final_mode"] = self.state.mavros_state.mode if self.state.mavros_state else None
+    recovery["finished_at"] = time.time()
+    self.write_failure_summary(original_error, recovery)
+    return recovery
 
   def write_samples(self) -> None:
     for topic, path in [
@@ -1259,6 +1390,7 @@ class Experiment:
 
 def main() -> int:
   experiment = Experiment()
+  recovery_attempted = False
   try:
     summary = experiment.run()
     metrics = summary["metrics"]
@@ -1291,18 +1423,15 @@ def main() -> int:
   except Exception as exc:
     print(f"M0-C5B1 experiment failed: {exc}", file=sys.stderr, flush=True)
     try:
-      if experiment.state.mavros_state is not None and experiment.state.mavros_state.armed:
-        experiment.call_mode("AUTO.LAND", require_mode=False)
-    except Exception as land_exc:
-      print(f"AUTO.LAND attempt after failure failed: {land_exc}", file=sys.stderr, flush=True)
+      recovery_attempted = True
+      experiment.recover_after_failure(str(exc))
+    except Exception as recovery_exc:
+      print(f"failure recovery failed: {recovery_exc}", file=sys.stderr, flush=True)
     return 1
   finally:
     try:
-      mavros_state = experiment.state.mavros_state if getattr(experiment, "state", None) else None
-      can_disable_output = (
-          mavros_state is not None and
-          (not mavros_state.armed or mavros_state.mode == "AUTO.LAND"))
-      if can_disable_output and experiment.output_disabled_time is None:
+      if (not recovery_attempted and not experiment.was_ever_armed() and
+          experiment.output_disabled_time is None):
         try:
           experiment.call_set_output(False)
         except Exception:

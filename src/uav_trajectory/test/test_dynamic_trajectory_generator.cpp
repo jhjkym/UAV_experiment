@@ -178,6 +178,35 @@ TEST(DynamicLine, PostClimbHoldKeepsAltitudeBeforeLine) {
   EXPECT_TRUE(saw_hold_sample);
 }
 
+TEST(DynamicLine, R2AExactReserveHoldDoesNotInvalidateAnchorSample) {
+  auto config = baseConfig(uav_trajectory::DynamicTrajectoryType::kLine);
+  config.start_delay_sec = 1.0;
+  config.initial_hold_sec = 1.0;
+  config.initial_climb_duration_sec = 8.0;
+  config.post_climb_hold_sec = 2.0;
+  config.line_length_m = 1.0;
+  config.line_segment_duration_sec = 5.0;
+  config.hold_end_sec = 70.0;
+  config.yaw_mode = uav_trajectory::YawMode::kFixed;
+  uav_trajectory::StartPose start;
+  start.x = -0.000873103;
+  start.y = -0.001673528;
+  start.z = -0.064756364;
+  start.yaw = -0.055;
+
+  const auto result = uav_trajectory::generateDynamicTrajectory(config, start);
+  ASSERT_TRUE(result.valid) << result.reason;
+  ASSERT_GT(result.trajectory.points.size(), 1800u);
+  const auto& final = result.trajectory.points.back();
+  EXPECT_NEAR(final.time_from_start.toSec(), 96.0, 1e-9);
+  EXPECT_NEAR(final.position.x, start.x, 1e-9);
+  EXPECT_NEAR(final.position.y, start.y, 1e-9);
+  EXPECT_NEAR(final.position.z, start.z + config.altitude_offset_m, 1e-9);
+  EXPECT_NEAR(speed(final), 0.0, 1e-12);
+  EXPECT_NEAR(accel(final), 0.0, 1e-12);
+  EXPECT_NEAR(final.yaw, start.yaw, 1e-12);
+}
+
 TEST(DynamicCircle, RadiusClosureVelocityAndAcceleration) {
   auto config = baseConfig(uav_trajectory::DynamicTrajectoryType::kCircle);
   config.hold_end_sec = 0.0;
