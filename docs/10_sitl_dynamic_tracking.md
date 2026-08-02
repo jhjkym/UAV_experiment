@@ -667,3 +667,19 @@ radius, direction, lap coverage, completed laps, radial and along-track errors,
 closure error, entry/exit continuity, and center endpoint error. This stage did
 not start PX4, Gazebo, MAVROS, OFFBOARD, arming, real `AUTO.LAND`, or any
 flight. M0-C5B2 circle SITL flight remains pending.
+
+## C5B2B-PREP Circle Entry
+
+M0-C5B2B-PREP fills the executable-entry gap left by `afcd69f`. It adds a
+guarded circle SITL entry and shell wrapper while retaining the C5B1 mission
+lifecycle for authorization, SITL checks, process cleanup, ground-hold,
+publisher delivery, pending handoff, landing reserve, `AUTO.LAND` lifecycle,
+abnormal recovery, and post-disarm bag recording.
+
+Circle-specific behavior is injected through `m0_c5b2_circle.yaml`, phase
+boundaries, artifact expectations, and circle acceptance gates. Future C5B2B
+runs use `/tmp/uav_m0_c5b2b/run_<timestamp>/` and `m0_c5b2b.bag`; they do not
+write into the accepted C5B1 run directory. The PREP dry-run consumes a mock
+one-shot authorization file, validates the circle command and phase boundaries,
+and starts no PX4, Gazebo, MAVROS, OFFBOARD, arming, real `AUTO.LAND`, or
+flight.

@@ -2,7 +2,9 @@
 import importlib.util
 import json
 import math
+import os
 import pathlib
+import sys
 import tempfile
 import time
 import unittest
@@ -18,6 +20,23 @@ SPEC = importlib.util.spec_from_file_location("m0_c5b1_sitl_line", SCRIPT_PATH)
 m0 = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(m0)
+sys.modules["m0_c5b1_sitl_line"] = m0
+sys.path.insert(0, str(SCRIPT_PATH.parent))
+
+DYNAMIC_MISSION_PATH = SCRIPT_PATH.with_name("dynamic_tracking_mission.py")
+DYNAMIC_MISSION_SPEC = importlib.util.spec_from_file_location("dynamic_tracking_mission",
+                                                              DYNAMIC_MISSION_PATH)
+dynamic_mission = importlib.util.module_from_spec(DYNAMIC_MISSION_SPEC)
+assert DYNAMIC_MISSION_SPEC.loader is not None
+sys.modules["dynamic_tracking_mission"] = dynamic_mission
+DYNAMIC_MISSION_SPEC.loader.exec_module(dynamic_mission)
+
+CIRCLE_PATH = SCRIPT_PATH.with_name("m0_c5b2b_sitl_circle.py")
+CIRCLE_SPEC = importlib.util.spec_from_file_location("m0_c5b2b_sitl_circle",
+                                                     CIRCLE_PATH)
+circle_entry = importlib.util.module_from_spec(CIRCLE_SPEC)
+assert CIRCLE_SPEC.loader is not None
+CIRCLE_SPEC.loader.exec_module(circle_entry)
 
 MATERIALIZER_PATH = SCRIPT_PATH.parents[1] / "analysis" / "materialize_m0_c5b1_artifacts.py"
 MATERIALIZER_SPEC = importlib.util.spec_from_file_location("materialize_m0_c5b1_artifacts",
@@ -127,6 +146,16 @@ def make_recovery_experiment(armed=True, mode="OFFBOARD"):
 
 def write_text(path, text):
   path.write_text(text, encoding="utf-8")
+
+
+def make_auth_file(token=circle_entry.AUTH_TOKEN, timestamp=None, mode=0o600):
+  fd, name = tempfile.mkstemp(prefix="c5b2b_auth_")
+  os.close(fd)
+  path = pathlib.Path(name)
+  stamp = int(time.time()) if timestamp is None else int(timestamp)
+  path.write_text(f"{token}\n{stamp}\n", encoding="utf-8")
+  os.chmod(path, mode)
+  return path
 
 
 def make_materializer_run(success=True):
@@ -483,6 +512,120 @@ class M0C5B1ProtocolTest(unittest.TestCase):
     self.assertFalse(m0.is_authorized({"UAV_ALLOW_SITL_FLIGHT": "yes"}))
     self.assertTrue(m0.is_authorized({"UAV_ALLOW_SITL_FLIGHT": "YES"}))
 
+  def test_circle_entry_rejects_missing_authorization(self):
+    missing = pathlib.Path(tempfile.mkdtemp()) / "missing_auth"
+    with self.assertRaises(RuntimeError):
+      dynamic_mission.validate_one_shot_auth(missing, circle_entry.AUTH_TOKEN)
+
+  def test_circle_entry_rejects_wrong_authorization_token(self):
+    auth = make_auth_file("WRONG_TOKEN")
+    with self.assertRaises(RuntimeError):
+      dynamic_mission.validate_one_shot_auth(auth, circle_entry.AUTH_TOKEN)
+    auth.unlink()
+
+  def test_circle_entry_rejects_expired_authorization(self):
+    auth = make_auth_file(timestamp=time.time() - dynamic_mission.AUTH_MAX_AGE_SEC - 2)
+    with self.assertRaises(RuntimeError):
+      dynamic_mission.validate_one_shot_auth(auth, circle_entry.AUTH_TOKEN)
+    auth.unlink()
+
+  def test_circle_entry_consumes_valid_authorization(self):
+    auth = make_auth_file()
+    details = dynamic_mission.consume_one_shot_auth(auth, circle_entry.AUTH_TOKEN)
+    self.assertTrue(details["consumed"])
+    self.assertFalse(auth.exists())
+
+  def test_circle_dry_run_does_not_start_processes_or_services(self):
+    auth = make_auth_file()
+    result = circle_entry.dry_run(auth)
+    self.assertTrue(result["dry_run"])
+    self.assertEqual(result["started_processes"], [])
+    self.assertEqual(result["service_calls"], [])
+    self.assertFalse(auth.exists())
+
+  def test_circle_dry_run_uses_circle_config_and_paths(self):
+    auth = make_auth_file()
+    result = circle_entry.dry_run(auth)
+    self.assertEqual(result["trajectory_type"], "circle")
+    self.assertEqual(result["config_path"], str(circle_entry.CONFIG_PATH))
+    self.assertEqual(result["log_root"], "/tmp/uav_m0_c5b2b")
+    self.assertEqual(result["bag_name"], "m0_c5b2b.bag")
+    self.assertIn("m0_c5b2b_circle_tracking.launch", result["project_launch"])
+
+  def test_circle_publisher_command_is_not_line(self):
+    config = circle_entry.load_circle_config()
+    command = circle_entry.build_circle_publisher_command(config, "map", (1.0, 2.0, 0.3), 0.4)
+    self.assertIn("_trajectory_type:=circle", command)
+    self.assertNotIn("_trajectory_type:=line", command)
+
+  def test_circle_publisher_command_contains_circle_parameters(self):
+    config = circle_entry.load_circle_config()
+    command = circle_entry.build_circle_publisher_command(config, "map", (1.0, 2.0, 0.3), 0.4)
+    for text in [
+        "_circle_radius_m:=1.000",
+        "_circle_laps:=1.000",
+        "_circle_tangent_speed_mps:=0.400",
+        "_transition_duration_sec:=4.000",
+        "_publish_once:=true",
+        "_publish_repeat_count:=3",
+    ]:
+      self.assertIn(text, command)
+
+  def test_circle_geometry_and_phase_boundaries(self):
+    config = circle_entry.load_circle_config()
+    boundaries = dynamic_mission.circle_phase_boundaries(config)
+    self.assertAlmostEqual(boundaries["CLIMB_END"], 9.0)
+    self.assertAlmostEqual(boundaries["CLIMB_HOLD_END"], 11.0)
+    self.assertAlmostEqual(boundaries["CIRCLE_ENTRY_END"], 15.0)
+    self.assertAlmostEqual(boundaries["LAP_DURATION"], 2.0 * math.pi / 0.4)
+    self.assertAlmostEqual(boundaries["CIRCLE_LAP_END"], 15.0 + 2.0 * math.pi / 0.4)
+    self.assertAlmostEqual(boundaries["CIRCLE_EXIT_END"],
+                           boundaries["CIRCLE_LAP_END"] + 4.0)
+    self.assertAlmostEqual(boundaries["TRAJECTORY_TOTAL"],
+                           boundaries["CENTER_HOLD_END"] + 60.0)
+
+  def test_circle_phase_order_is_explicit(self):
+    self.assertEqual(circle_entry.PHASE_ORDER[0], "PREFLIGHT")
+    self.assertIn("PENDING_HANDOFF", circle_entry.PHASE_ORDER)
+    self.assertLess(circle_entry.PHASE_ORDER.index("CIRCLE_ENTRY"),
+                    circle_entry.PHASE_ORDER.index("CIRCLE_LAP"))
+    self.assertLess(circle_entry.PHASE_ORDER.index("CIRCLE_LAP"),
+                    circle_entry.PHASE_ORDER.index("CIRCLE_EXIT"))
+    self.assertLess(circle_entry.PHASE_ORDER.index("LANDING_PREP"),
+                    circle_entry.PHASE_ORDER.index("LANDING"))
+
+  def test_circle_entry_reuses_c5b1_landing_and_recovery(self):
+    self.assertIs(circle_entry.CircleExperiment.land_and_wait_disarmed,
+                  m0.Experiment.land_and_wait_disarmed)
+    self.assertIs(circle_entry.CircleExperiment.recover_after_failure,
+                  m0.Experiment.recover_after_failure)
+    self.assertIs(circle_entry.CircleExperiment.start_dynamic_flight_trajectory,
+                  m0.Experiment.start_dynamic_flight_trajectory)
+
+  def test_circle_artifact_list_includes_circle_metrics(self):
+    artifacts = dynamic_mission.expected_circle_artifacts()
+    self.assertIn("circle_metrics.json", artifacts)
+    self.assertIn("landing_lifecycle_metrics.json", artifacts)
+    self.assertIn("recovery_metrics.json", artifacts)
+
+  def test_circle_source_does_not_write_c5b1_run_directory(self):
+    source = CIRCLE_PATH.read_text(encoding="utf-8")
+    self.assertNotIn("/tmp/uav_m0_c5b1", source)
+    self.assertNotIn("_trajectory_type:=line", source)
+
+  def test_circle_launch_does_not_start_flight_stack_or_control_services(self):
+    launch = (pathlib.Path("/home/tom/UAV_experiment") /
+              "src/uav_bringup/launch/sim/m0_c5b2b_circle_tracking.launch").read_text(
+                  encoding="utf-8")
+    for forbidden in ["mavros/cmd/arming", "mavros/set_mode", "serial://", "/dev/tty"]:
+      self.assertNotIn(forbidden, launch)
+    self.assertNotIn("PX4-Autopilot", launch)
+
+  def test_line_entry_keeps_line_publisher_command(self):
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    self.assertIn("_trajectory_type:=line", source)
+    self.assertIn("m0_c5b1_line_tracking.launch", source)
+
   def test_publisher_sigsegv_before_arming_does_not_request_land(self):
     experiment = make_recovery_experiment(armed=False, mode="")
     recovery = experiment.recover_after_failure("dynamic publisher exit_code=-11")
@@ -645,6 +788,19 @@ class M0C5B1ProtocolTest(unittest.TestCase):
     self.assertEqual(circle["target_radius_m"], 1.0)
     self.assertEqual(circle["direction"], "ccw")
     self.assertTrue(circle["circle_passed"])
+
+  def test_circle_materializer_accepts_c5b2b_project_log_name(self):
+    run_dir = make_circle_materializer_run()
+    (run_dir / "m0_c5b1_project_nodes.log").rename(run_dir / "m0_c5b2b_project_nodes.log")
+    materializer.materialize_run_dir(run_dir)
+    delivery = json.loads((run_dir / "delivery_diagnostics.json").read_text(encoding="utf-8"))
+    handoff = json.loads((run_dir / "handoff_metrics.json").read_text(encoding="utf-8"))
+    lifecycle = json.loads((run_dir / "landing_lifecycle_metrics.json").read_text(encoding="utf-8"))
+    self.assertIn("m0_c5b2b_project_nodes.log", delivery["source_files"])
+    self.assertIn("m0_c5b2b_project_nodes.log", handoff["source_files"])
+    self.assertIn("m0_c5b2b_project_nodes.log", lifecycle["source_files"])
+    self.assertTrue(delivery["delivery_passed"])
+    self.assertTrue(handoff["handoff_passed"])
 
   def test_circle_radius_rms_and_radial_error(self):
     run_dir = make_circle_materializer_run()

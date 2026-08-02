@@ -87,6 +87,8 @@ def validate_trajectory_switch(previous_point,
 def tracking_acceptance_window(phase_starts: Dict[str, float],
                                land_request_time: Optional[float],
                                line_end_time: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+  if "CIRCLE_LAP" in phase_starts:
+    return phase_starts.get("CIRCLE_LAP"), land_request_time or line_end_time
   return phase_starts.get("LINE_FORWARD"), land_request_time or line_end_time
 
 
@@ -158,6 +160,12 @@ class PhaseRecorder:
     return result
 
 
+def phase_recorder_with_order(order: List[str]):
+  class CustomPhaseRecorder(PhaseRecorder):
+    ORDER = order
+  return CustomPhaseRecorder
+
+
 def make_hold_trajectory(frame_id: str,
                          position: Tuple[float, float, float],
                          yaw: float,
@@ -219,7 +227,7 @@ class Experiment:
   def __init__(self) -> None:
     if not is_authorized(os.environ):
       raise RuntimeError("UAV_ALLOW_SITL_FLIGHT must be exactly YES")
-    self.run_dir = LOG_ROOT / time.strftime("run_%Y%m%d_%H%M%S")
+    self.run_dir = self.log_root() / time.strftime("run_%Y%m%d_%H%M%S")
     self.run_dir.mkdir(parents=True, exist_ok=False)
     self.processes: List[ManagedProcess] = []
     self.state = TopicState()
@@ -252,7 +260,7 @@ class Experiment:
     self.horizontal_error_dwell = DwellThreshold(1.0, 0.5)
     self.abort_reason: Optional[str] = None
     self.service_calls: List[Dict[str, object]] = []
-    self.phase = PhaseRecorder()
+    self.phase = self.phase_recorder()
     self.flight_trajectory_id: Optional[int] = None
     self.flight_trajectory_stamp: Optional[float] = None
     self.flight_trajectory_publisher_started_at: Optional[float] = None
@@ -262,6 +270,94 @@ class Experiment:
     self.observed_armed_true = False
     self.final_disarm_confirmed = False
     self.abort_recovery: Dict[str, object] = {}
+
+  def log_root(self) -> Path:
+    return LOG_ROOT
+
+  def phase_recorder(self):
+    return PhaseRecorder()
+
+  def ros_node_name(self) -> str:
+    return "m0_c5b1_sitl_line_experiment"
+
+  def project_launch_command(self) -> str:
+    return 'roslaunch "$(rospack find uav_bringup)/launch/sim/m0_c5b1_line_tracking.launch"'
+
+  def project_process_name(self) -> str:
+    return "m0_c5b1_project_nodes"
+
+  def bag_name(self) -> str:
+    return "m0_c5b1.bag"
+
+  def center_hold_end_sec(self) -> float:
+    return CENTER_HOLD_END_SEC
+
+  def trajectory_total_sec(self) -> float:
+    return TRAJECTORY_TOTAL_SEC
+
+  def dynamic_trajectory_command(self, frame_id: str) -> str:
+    assert self.start_position is not None
+    return (
+        "rosrun uav_trajectory dynamic_trajectory_publisher_node "
+        "_trajectory_type:=line "
+        f"_frame_id:={frame_id} "
+        f"_start_delay_sec:={FLIGHT_START_DELAY_SEC:.3f} "
+        f"_start_x:={self.start_position[0]:.9f} "
+        f"_start_y:={self.start_position[1]:.9f} "
+        f"_start_z:={self.start_position[2]:.9f} "
+        f"_start_yaw:={self.target_yaw:.9f} "
+        "_altitude_offset_m:=1.0 "
+        f"_initial_hold_sec:={INITIAL_HOLD_SEC:.3f} "
+        f"_initial_climb_duration_sec:={RISE_DURATION_SEC:.3f} "
+        f"_post_climb_hold_sec:={ALTITUDE_SETTLE_SEC:.3f} "
+        f"_line_length_m:={LINE_LENGTH_M:.3f} "
+        f"_line_segment_duration_sec:={LINE_SEGMENT_DURATION_SEC:.3f} "
+        f"_hold_end_sec:={HOVER_DURATION_SEC:.3f} "
+        "_yaw_mode:=fixed "
+        "_publish_once:=true "
+        "_subscriber_wait_timeout_sec:=2.000 "
+        "_publish_repeat_count:=3 "
+        "_publish_repeat_interval_sec:=0.050 "
+        "_post_publish_grace_sec:=0.200"
+    )
+
+  def mission_summary_fields(self) -> Dict[str, object]:
+    return {
+        "line_waypoints": [
+            self.start_position,
+            (self.start_position[0] + LINE_LENGTH_M, self.start_position[1], self.target_position[2]),
+            (self.start_position[0] - LINE_LENGTH_M, self.start_position[1], self.target_position[2]),
+            (self.start_position[0], self.start_position[1], self.target_position[2]),
+        ] if self.start_position and self.target_position else None,
+    }
+
+  def mission_passed(self, summary: Dict[str, object]) -> bool:
+    metrics = summary["metrics"]
+    return (
+        metrics.get("abort_reason") is None and
+        metrics.get("setpoint_average_rate_hz", 0.0) >= 20.0 and
+        metrics.get("data_coverage_target", 0.0) >= 0.95 and
+        metrics.get("data_coverage_actual", 0.0) >= 0.95 and
+        metrics.get("horizontal_rms_error_m", 99.0) <= 0.25 and
+        metrics.get("horizontal_max_error_m", 99.0) <= 0.5 and
+        metrics.get("height_rms_error_m", 99.0) <= 0.25 and
+        metrics.get("center_endpoint_error_m", 99.0) <= 0.25 and
+        not metrics.get("nan_or_inf") and
+        metrics.get("nan_or_inf_count", 1) == 0 and
+        not metrics.get("adapter_fault") and
+        metrics.get("adapter_fault_count", 1) == 0 and
+        metrics.get("unexpected_offboard_exit_count", 1) == 0 and
+        metrics.get("center_hold_completed") is True and
+        metrics.get("reserve_remaining_at_land_request_sec", 0.0) >= MIN_RESERVE_AT_LAND_REQUEST_SEC and
+        metrics.get("output_gate_closed_after_land_confirm") is True and
+        metrics.get("output_gate_close_error") is None and
+        metrics.get("mode_at_output_gate_close") == "AUTO.LAND" and
+        metrics.get("final_armed") is False and
+        summary["phase_times"].get("LINE_FORWARD", {}).get("status") == "reached" and
+        summary["phase_times"].get("LINE_REVERSE", {}).get("status") == "reached" and
+        summary["phase_times"].get("LINE_RETURN", {}).get("status") == "reached" and
+        summary["phase_times"].get("CENTER_HOLD", {}).get("status") == "reached"
+    )
 
   def start_process(self, name: str, command: str, cwd: Path) -> None:
     log_path = self.run_dir / f"{name}.log"
@@ -551,29 +647,7 @@ class Experiment:
     )
     self.target_yaw = self.yaw_from_quaternion(state.pose.orientation)
     self.flight_trajectory_stamp = rospy.Time.now().to_sec() + FLIGHT_START_DELAY_SEC
-    command = (
-        "rosrun uav_trajectory dynamic_trajectory_publisher_node "
-        "_trajectory_type:=line "
-        f"_frame_id:={frame_id} "
-        f"_start_delay_sec:={FLIGHT_START_DELAY_SEC:.3f} "
-        f"_start_x:={self.start_position[0]:.9f} "
-        f"_start_y:={self.start_position[1]:.9f} "
-        f"_start_z:={self.start_position[2]:.9f} "
-        f"_start_yaw:={self.target_yaw:.9f} "
-        "_altitude_offset_m:=1.0 "
-        f"_initial_hold_sec:={INITIAL_HOLD_SEC:.3f} "
-        f"_initial_climb_duration_sec:={RISE_DURATION_SEC:.3f} "
-        f"_post_climb_hold_sec:={ALTITUDE_SETTLE_SEC:.3f} "
-        f"_line_length_m:={LINE_LENGTH_M:.3f} "
-        f"_line_segment_duration_sec:={LINE_SEGMENT_DURATION_SEC:.3f} "
-        f"_hold_end_sec:={HOVER_DURATION_SEC:.3f} "
-        "_yaw_mode:=fixed "
-        "_publish_once:=true "
-        "_subscriber_wait_timeout_sec:=2.000 "
-        "_publish_repeat_count:=3 "
-        "_publish_repeat_interval_sec:=0.050 "
-        "_post_publish_grace_sec:=0.200"
-    )
+    command = self.dynamic_trajectory_command(frame_id)
     self.flight_trajectory_publisher_started_at = time.time()
     self.start_process("dynamic_flight_trajectory", command, REPO_DIR)
     managed = self.managed_process("dynamic_flight_trajectory")
@@ -761,8 +835,8 @@ class Experiment:
     assert self.target_position is not None
     assert self.flight_trajectory_stamp is not None
     self.flight_start_time = time.time()
-    self.line_end_time = self.flight_trajectory_stamp + CENTER_HOLD_END_SEC
-    self.trajectory_end_time = self.flight_trajectory_stamp + TRAJECTORY_TOTAL_SEC
+    self.line_end_time = self.flight_trajectory_stamp + self.center_hold_end_sec()
+    self.trajectory_end_time = self.flight_trajectory_stamp + self.trajectory_total_sec()
     while time.time() < self.line_end_time and not rospy.is_shutdown():
       self.update_phase_from_time(rospy.Time.now().to_sec())
       reason = self.abort_condition(self.flight_start_time)
@@ -850,7 +924,7 @@ class Experiment:
     if self.state.mavros_state is None:
       raise RuntimeError("MAVROS state unavailable before landing")
     now = rospy.Time.now().to_sec()
-    remaining = reserve_remaining_at(self.flight_trajectory_stamp, now)
+    remaining = self.flight_trajectory_stamp + self.trajectory_total_sec() - now
     if remaining < MIN_RESERVE_AT_LAND_REQUEST_SEC:
       raise RuntimeError(f"landing reserve too short before AUTO.LAND request: {remaining:.3f} s")
     if self.state.offboard_status is None or self.state.offboard_status.state_name == "FAULT":
@@ -1080,11 +1154,11 @@ class Experiment:
           self.output_disabled_time - self.land_confirm_time)
     if self.flight_trajectory_stamp:
       if self.land_request_time:
-        metrics["reserve_remaining_at_land_request_sec"] = reserve_remaining_at(
-            self.flight_trajectory_stamp, self.land_request_time)
+        metrics["reserve_remaining_at_land_request_sec"] = (
+            self.flight_trajectory_stamp + self.trajectory_total_sec() - self.land_request_time)
       if self.land_confirm_time:
-        metrics["reserve_remaining_at_land_confirm_sec"] = reserve_remaining_at(
-            self.flight_trajectory_stamp, self.land_confirm_time)
+        metrics["reserve_remaining_at_land_confirm_sec"] = (
+            self.flight_trajectory_stamp + self.trajectory_total_sec() - self.land_confirm_time)
     metrics.update({
         "center_hold_completed": self.center_hold_completed,
         "landing_reserve_sec": LANDING_RESERVE_HOLD_SEC,
@@ -1287,7 +1361,7 @@ class Experiment:
     self.wait_for("ROS master", lambda: subprocess.run(
         ["bash", "-lc", "rosnode list >/dev/null 2>&1"],
         cwd=str(REPO_DIR)).returncode == 0, 15.0)
-    rospy.init_node("m0_c5b1_sitl_line_experiment", anonymous=True, disable_signals=True)
+    rospy.init_node(self.ros_node_name(), anonymous=True, disable_signals=True)
     self.setup_ros_subscribers()
 
     px4_cmd = (
@@ -1323,8 +1397,7 @@ class Experiment:
     frame_id, start_position, start_yaw = self.capture_start_state()
     self.stop_process("state_bridge_prefetch")
 
-    launch_cmd = 'roslaunch "$(rospack find uav_bringup)/launch/sim/m0_c5b1_line_tracking.launch"'
-    self.start_process("m0_c5b1_project_nodes", launch_cmd, REPO_DIR)
+    self.start_process(self.project_process_name(), self.project_launch_command(), REPO_DIR)
     self.wait_for("project state and adapter topics", lambda:
                   self.state.uav_state is not None and
                   self.state.offboard_status is not None, 30.0)
@@ -1333,7 +1406,7 @@ class Experiment:
 
     self.start_process(
         "rosbag",
-        "rosbag record -O m0_c5b1.bag "
+        f"rosbag record -O {self.bag_name()} "
         "/mavros/state /mavros/local_position/odom /mavros/setpoint_raw/local "
         "/mavros/setpoint_raw/target_local /uav/state /uav/trajectory "
         "/uav/setpoint_preview /uav/mavros_target_preview /uav/offboard_status "
@@ -1365,12 +1438,6 @@ class Experiment:
         "px4_commit": px4_commit,
         "start_position": self.start_position,
         "target_position": self.target_position,
-        "line_waypoints": [
-            self.start_position,
-            (self.start_position[0] + LINE_LENGTH_M, self.start_position[1], self.target_position[2]),
-            (self.start_position[0] - LINE_LENGTH_M, self.start_position[1], self.target_position[2]),
-            (self.start_position[0], self.start_position[1], self.target_position[2]),
-        ] if self.start_position and self.target_position else None,
         "target_yaw": self.target_yaw,
         "ground_hold_trajectory_id": ground_hold_id,
         "flight_trajectory_id": self.flight_trajectory_id,
@@ -1397,6 +1464,7 @@ class Experiment:
         "offboard_status": self.state.offboard_status.state_name if self.state.offboard_status else None,
         "metrics": metrics,
     }
+    summary.update(self.mission_summary_fields())
     (self.run_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     self.materialize_derived_artifacts()
     print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
@@ -1408,32 +1476,7 @@ def main() -> int:
   recovery_attempted = False
   try:
     summary = experiment.run()
-    metrics = summary["metrics"]
-    passed = (
-        metrics.get("abort_reason") is None and
-        metrics.get("setpoint_average_rate_hz", 0.0) >= 20.0 and
-        metrics.get("data_coverage_target", 0.0) >= 0.95 and
-        metrics.get("data_coverage_actual", 0.0) >= 0.95 and
-        metrics.get("horizontal_rms_error_m", 99.0) <= 0.25 and
-        metrics.get("horizontal_max_error_m", 99.0) <= 0.5 and
-        metrics.get("height_rms_error_m", 99.0) <= 0.25 and
-        metrics.get("center_endpoint_error_m", 99.0) <= 0.25 and
-        not metrics.get("nan_or_inf") and
-        metrics.get("nan_or_inf_count", 1) == 0 and
-        not metrics.get("adapter_fault") and
-        metrics.get("adapter_fault_count", 1) == 0 and
-        metrics.get("unexpected_offboard_exit_count", 1) == 0 and
-        metrics.get("center_hold_completed") is True and
-        metrics.get("reserve_remaining_at_land_request_sec", 0.0) >= MIN_RESERVE_AT_LAND_REQUEST_SEC and
-        metrics.get("output_gate_closed_after_land_confirm") is True and
-        metrics.get("output_gate_close_error") is None and
-        metrics.get("mode_at_output_gate_close") == "AUTO.LAND" and
-        metrics.get("final_armed") is False and
-        summary["phase_times"].get("LINE_FORWARD", {}).get("status") == "reached" and
-        summary["phase_times"].get("LINE_REVERSE", {}).get("status") == "reached" and
-        summary["phase_times"].get("LINE_RETURN", {}).get("status") == "reached" and
-        summary["phase_times"].get("CENTER_HOLD", {}).get("status") == "reached"
-    )
+    passed = experiment.mission_passed(summary)
     return 0 if passed else 4
   except Exception as exc:
     print(f"M0-C5B1 experiment failed: {exc}", file=sys.stderr, flush=True)

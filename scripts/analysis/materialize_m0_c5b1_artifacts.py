@@ -173,6 +173,18 @@ def base(run_dir: Path, sources: Iterable[str]) -> Dict[str, Any]:
   }
 
 
+def project_log_path(run_dir: Path, summary: Dict[str, Any]) -> Path:
+  candidates = []
+  if summary.get("trajectory_type") == "circle":
+    candidates.append(run_dir / "m0_c5b2b_project_nodes.log")
+  candidates.append(run_dir / "m0_c5b1_project_nodes.log")
+  candidates.append(run_dir / "project_nodes.log")
+  for path in candidates:
+    if path.exists():
+      return path
+  return candidates[0]
+
+
 def grep_float(pattern: str, text: str, group: str) -> Optional[float]:
   match = re.search(pattern, text)
   if not match:
@@ -345,8 +357,9 @@ def phase_payload(summary: Dict[str, Any], tracking: Dict[str, Any], run_dir: Pa
 
 def delivery_payload(summary: Dict[str, Any], run_dir: Path, dynamic: Dict[str, Any],
                      project: Dict[str, Any]) -> Dict[str, Any]:
+  project_log = project.get("source_log", "m0_c5b1_project_nodes.log")
   payload = base(run_dir, ["summary.json", "dynamic_flight_trajectory.log",
-                           "m0_c5b1_project_nodes.log", "uav_trajectory_sample.txt"])
+                           project_log, "uav_trajectory_sample.txt"])
   trajectory_id = dynamic.get("trajectory_id", summary.get("flight_trajectory_id"))
   payload.update({
       "publisher_executable": "rosrun uav_trajectory dynamic_trajectory_publisher_node",
@@ -376,7 +389,8 @@ def delivery_payload(summary: Dict[str, Any], run_dir: Path, dynamic: Dict[str, 
 
 def handoff_payload(summary: Dict[str, Any], run_dir: Path, project: Dict[str, Any]) -> Dict[str, Any]:
   metrics = summary.get("metrics", {})
-  payload = base(run_dir, ["summary.json", "m0_c5b1_project_nodes.log"])
+  project_log = project.get("source_log", "m0_c5b1_project_nodes.log")
+  payload = base(run_dir, ["summary.json", project_log])
   payload.update({
       "ground_trajectory_id": project.get("ground_trajectory_id", summary.get("ground_hold_trajectory_id")),
       "flight_trajectory_id": project.get("flight_trajectory_id", summary.get("flight_trajectory_id")),
@@ -409,7 +423,7 @@ def landing_payload(summary: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
   phase = summary.get("phase_times", {})
   disarm = summary.get("disarm_at")
   stable = phase.get("COMPLETE", {}).get("start")
-  payload = base(run_dir, ["summary.json", "m0_c5b1_project_nodes.log", "rosbag.log"])
+  payload = base(run_dir, ["summary.json", project_log_path(run_dir, summary).name, "rosbag.log"])
   payload.update({
       "center_hold_completed_at": summary.get("center_hold_end_time"),
       "landing_prep_started_at": phase.get("LANDING_PREP", {}).get("start"),
@@ -736,7 +750,9 @@ def materialize_run_dir(run_dir: Path, overwrite_derived_only: bool = False) -> 
   summary = read_json(run_dir / "summary.json")
   tracking = read_json(run_dir / "tracking_metrics.json") if (run_dir / "tracking_metrics.json").exists() else {}
   dynamic = parse_dynamic_log(run_dir / "dynamic_flight_trajectory.log")
-  project = parse_project_log(run_dir / "m0_c5b1_project_nodes.log")
+  project_log = project_log_path(run_dir, summary)
+  project = parse_project_log(project_log)
+  project["source_log"] = project_log.name
   outputs = {
       "delivery_diagnostics.json": delivery_payload(summary, run_dir, dynamic, project),
       "handoff_metrics.json": handoff_payload(summary, run_dir, project),

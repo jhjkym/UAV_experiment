@@ -88,6 +88,13 @@ closure, and lifecycle artifact generation. This preparation did not start PX4,
 Gazebo, MAVROS, OFFBOARD, arming, `AUTO.LAND`, or any flight. Circle and
 figure-eight SITL tracking remain future stages.
 
+M0-C5B2B-PREP adds the guarded circle SITL experiment entry and dry-run checks
+without performing a circle flight. The circle entry uses an explicit one-shot
+authorization file with token `M0_C5B2B_CIRCLE_SITL_ONLY`, writes future runs
+under `/tmp/uav_m0_c5b2b/`, uses `m0_c5b2b.bag`, and reuses the accepted C5B1
+ground-hold, publisher delivery, pending handoff, landing reserve, recovery,
+and post-disarm recording lifecycle.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash
@@ -100,8 +107,9 @@ catkin_test_results build
 
 Normal development and test launches do not provide flight capability and do
 not publish real MAVROS control setpoints. M0-C4 and M0-C5B1 flight validation
-are separate PX4 SITL-only experiment paths guarded by
-`UAV_ALLOW_SITL_FLIGHT=YES`; they must not be used with real flight hardware.
+are separate PX4 SITL-only experiment paths guarded by explicit authorization;
+the prepared M0-C5B2B circle entry follows the same SITL-only boundary and must
+not be used with real flight hardware.
 
 M0-C1 does not clone or vendor PX4-Autopilot into this repository. PX4 should be
 kept as external source, for example `/home/tom/third_party/PX4-Autopilot`.

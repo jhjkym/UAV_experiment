@@ -114,3 +114,14 @@ M0-C5B2A circle tracking preparation:
 - The C5B2A stage did not perform a circle SITL flight. Future circle flight
   execution remains PX4 SITL-only and must use the same authorization and
   hardware-rejection boundary as C5B1.
+
+M0-C5B2B-PREP circle entry:
+- Adds `scripts/experiments/m0_c5b2b_sitl_circle.py` and shell wrapper as a
+  guarded entry for future circle SITL execution.
+- The entry reuses the C5B1 experiment lifecycle for SITL identity checks,
+  one-shot authorization, process cleanup, publisher delivery, pending handoff,
+  landing reserve, recovery, and post-disarm bag recording.
+- The only circle-specific inputs are `m0_c5b2_circle.yaml`, circle phase
+  boundaries, circle artifact expectations, and circle acceptance gates.
+- The PREP stage is code, dry-run, and mock-test only. It does not start PX4,
+  Gazebo, MAVROS, OFFBOARD, arming, or real `AUTO.LAND`.

@@ -1,8 +1,14 @@
-# M0-C5B2A SITL Circle Tracking Preparation
+# M0-C5B2 SITL Circle Tracking Preparation
 
 M0-C5B2A defines the PX4 SITL-only circle tracking protocol, metrics, and
 offline tests. This stage did not start PX4, Gazebo, MAVROS, OFFBOARD, arming,
 `AUTO.LAND`, or any flight.
+
+M0-C5B2B-PREP adds the executable circle experiment entry without performing a
+flight. Commit `afcd69f` prepared the offline protocol and metrics only; it did
+not include an executable circle SITL entry. The PREP entry reuses the accepted
+C5B1 safety lifecycle and supplies only the circle configuration, phase
+boundaries, artifact expectations, and circle acceptance rules.
 
 ## Reused Lifecycle
 
@@ -29,6 +35,21 @@ cross-file consistency checks. Circle-specific behavior is supplied by
 trajectory configuration and circle metrics; it must not duplicate the state
 machine or circle mathematics in an experiment script.
 
+The guarded entry points prepared for the next flight are:
+
+```text
+scripts/experiments/m0_c5b2b_sitl_circle.py
+scripts/experiments/m0_c5b2b_sitl_circle.sh
+src/uav_bringup/launch/sim/m0_c5b2b_circle_tracking.launch
+```
+
+The Python entry consumes an explicit `--auth-file` containing the one-shot
+token `M0_C5B2B_CIRCLE_SITL_ONLY`. It requires a regular non-symlink file owned
+by the current user, mode `600`, a matching token on line 1, and a Unix
+timestamp no older than ten minutes on line 2. The file is deleted before any
+process can be started. The dry-run mode validates the same authorization and
+configuration but starts no processes and calls no services.
+
 ## Geometry
 
 The C5B2A default trajectory is ENU and relative to the latest valid
@@ -40,9 +61,9 @@ initial_hold_sec: 1.0
 initial_climb_duration_sec: 8.0
 post_climb_hold_sec: 2.0
 circle_radius_m: 1.0
-circle_tangential_speed_mps: 0.40
+circle_tangent_speed_mps: 0.40
 circle_laps: 1.0
-circle_transition_sec: 4.0
+transition_duration_sec: 4.0
 center_hold_evaluation_sec: 10.0
 landing_reserve_hold_sec: 60.0
 yaw_mode: fixed
@@ -179,3 +200,22 @@ Derived JSON files are written atomically, are deterministic on repeated runs,
 and refuse conflicting overwrites unless explicitly using the derived-only
 overwrite mode. Bags, logs, PX4 artifacts, ULog files, and core files remain in
 `/tmp` and are not tracked by Git.
+
+M0-C5B2B runs use their own directory:
+
+```text
+/tmp/uav_m0_c5b2b/run_<timestamp>/
+```
+
+The rosbag name is `m0_c5b2b.bag`. Circle runs must not write into the C5B1
+line-tracking directory.
+
+## PREP Validation
+
+The PREP dry-run verifies the circle config path
+`src/uav_trajectory/config/m0_c5b2_circle.yaml`, `trajectory_type=circle`,
+publisher parameters for radius/laps/speed/transition, phase boundaries derived
+from the circle configuration, expected JSON artifacts, the C5B2B run root, and
+the C5B2B bag name. It does not start PX4, Gazebo, MAVROS, OFFBOARD, arming,
+real `AUTO.LAND`, or any flight. The next stage may use a fresh one-shot
+authorization to execute the actual PX4 SITL circle tracking experiment.
