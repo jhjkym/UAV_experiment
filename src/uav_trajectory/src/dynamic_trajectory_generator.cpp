@@ -144,7 +144,7 @@ bool validateConfig(const DynamicTrajectoryConfig& config, std::string* reason) 
       config.sample_period_sec, config.hold_end_sec, config.initial_hold_sec,
       config.initial_climb_duration_sec, config.post_climb_hold_sec, config.line_length_m,
       config.line_segment_duration_sec, config.circle_radius_m,
-      config.circle_tangent_speed_mps, config.transition_duration_sec,
+      config.circle_tangent_speed_mps, config.circle_laps, config.transition_duration_sec,
       config.figure8_amplitude_x_m, config.figure8_amplitude_y_m,
       config.max_velocity_mps, config.max_acceleration_mps2, config.max_jerk_mps3,
       config.low_speed_yaw_threshold_mps};
@@ -174,7 +174,8 @@ bool validateConfig(const DynamicTrajectoryConfig& config, std::string* reason) 
   }
   if (config.line_length_m <= 0.0 || config.line_segment_duration_sec <= 0.0 ||
       config.circle_radius_m <= 0.0 || config.circle_tangent_speed_mps <= 0.0 ||
-      config.transition_duration_sec <= 0.0 || config.figure8_amplitude_x_m <= 0.0 ||
+      config.circle_laps <= 0.0 || config.transition_duration_sec <= 0.0 ||
+      config.figure8_amplitude_x_m <= 0.0 ||
       config.figure8_amplitude_y_m <= 0.0 || config.low_speed_yaw_threshold_mps < 0.0) {
     *reason = "shape parameters are outside valid ranges";
     return false;
@@ -199,7 +200,8 @@ std::string makeTraceId(const DynamicTrajectoryConfig& config) {
       break;
     case DynamicTrajectoryType::kCircle:
       out << "_R" << formatDouble(config.circle_radius_m)
-          << "_vt" << formatDouble(config.circle_tangent_speed_mps);
+          << "_vt" << formatDouble(config.circle_tangent_speed_mps)
+          << "_laps" << formatDouble(config.circle_laps);
       break;
     case DynamicTrajectoryType::kFigure8:
       out << "_A" << formatDouble(config.figure8_amplitude_x_m)
@@ -293,10 +295,11 @@ std::vector<FlatSample> generateCircleSamples(const DynamicTrajectoryConfig& con
   std::vector<FlatSample> samples;
   const double z = start_pose.z + config.altitude_offset_m;
   const double r = config.circle_radius_m;
+  const double circle_angle = kTwoPi * config.circle_laps;
   const double transition = config.transition_duration_sec * time_scale;
   const double circle_duration =
       std::max(config.duration_sec * time_scale - 2.0 * transition,
-               kTwoPi * r / config.circle_tangent_speed_mps * time_scale);
+               circle_angle * r / config.circle_tangent_speed_mps * time_scale);
   double t = 0.0;
   if (config.initial_hold_sec > 0.0) {
     FlatSample initial;
@@ -325,9 +328,9 @@ std::vector<FlatSample> generateCircleSamples(const DynamicTrajectoryConfig& con
   for (std::size_t i = 1; i <= steps; ++i) {
     const double local_t = circle_duration * static_cast<double>(i) / static_cast<double>(steps);
     const double u = local_t / circle_duration;
-    const double theta = kTwoPi * smooth5(u);
-    const double omega = kTwoPi * dsmooth5(u) / circle_duration;
-    const double alpha = kTwoPi * d2smooth5(u) / (circle_duration * circle_duration);
+    const double theta = circle_angle * smooth5(u);
+    const double omega = circle_angle * dsmooth5(u) / circle_duration;
+    const double alpha = circle_angle * d2smooth5(u) / (circle_duration * circle_duration);
     FlatSample sample;
     sample.t = t + local_t;
     sample.x = start_pose.x + r * std::cos(theta);
@@ -342,7 +345,8 @@ std::vector<FlatSample> generateCircleSamples(const DynamicTrajectoryConfig& con
     samples.push_back(sample);
   }
   t += circle_duration;
-  addSmoothSegment(&samples, t, transition, start_pose.x + r, start_pose.y, z,
+  const FlatSample last = samples.back();
+  addSmoothSegment(&samples, t, transition, last.x, last.y, z,
                    start_pose.x, start_pose.y, z, config.sample_period_sec);
   addHold(&samples, samples.back(), config.hold_end_sec, config.sample_period_sec);
   return samples;

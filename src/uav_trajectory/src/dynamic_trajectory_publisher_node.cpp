@@ -48,6 +48,10 @@ class DynamicTrajectoryPublisherNode {
     private_nh_.param<double>("circle_radius_m", config.circle_radius_m, 1.0);
     private_nh_.param<double>("circle_tangent_speed_mps",
                               config.circle_tangent_speed_mps, 0.5);
+    private_nh_.param<double>("circle_tangential_speed_mps",
+                              config.circle_tangent_speed_mps,
+                              config.circle_tangent_speed_mps);
+    private_nh_.param<double>("circle_laps", config.circle_laps, 1.0);
     private_nh_.param<double>("transition_duration_sec",
                               config.transition_duration_sec, 2.0);
     private_nh_.param<double>("figure8_amplitude_x_m",

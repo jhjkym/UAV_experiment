@@ -81,6 +81,13 @@ landing lifecycle, and recovery are materialized offline from the `/tmp` run
 data and are not tracked by Git. Circle and figure-eight SITL tracking have not
 started.
 
+M0-C5B2A prepares the circular SITL tracking protocol offline. It adds the
+circle-specific configuration, phase definitions, derived `circle_metrics.json`
+schema, and tests for radius, angle coverage, radial error, along-track error,
+closure, and lifecycle artifact generation. This preparation did not start PX4,
+Gazebo, MAVROS, OFFBOARD, arming, `AUTO.LAND`, or any flight. Circle and
+figure-eight SITL tracking remain future stages.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash

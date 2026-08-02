@@ -1,0 +1,25 @@
+trajectory_type: circle
+frame_id: map
+start_delay_sec: 1.0
+altitude_offset_m: 1.0
+duration_sec: 24.0
+sample_period_sec: 0.05
+
+initial_hold_sec: 1.0
+initial_climb_duration_sec: 8.0
+post_climb_hold_sec: 2.0
+
+circle_radius_m: 1.0
+circle_tangent_speed_mps: 0.4
+circle_tangential_speed_mps: 0.4
+circle_laps: 1.0
+transition_duration_sec: 4.0
+
+center_hold_evaluation_sec: 10.0
+landing_reserve_hold_sec: 60.0
+hold_end_sec: 70.0
+
+yaw_mode: fixed
+max_velocity_mps: 1.0
+max_acceleration_mps2: 1.5
+max_jerk_mps3: 4.0

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import math
 import pathlib
 import tempfile
 import time
@@ -235,6 +236,69 @@ def make_materializer_run(success=True):
     write_text(run_dir / "m0_c5b1_project_nodes.log", "")
   write_text(run_dir / "rosbag.log", "[INFO] Recording to 'm0_c5b1.bag'.\n")
   write_text(run_dir / "m0_c5b1.bag", "do not overwrite")
+  return run_dir
+
+
+def make_circle_materializer_run(direction="ccw", include_near_center=False):
+  run_dir = make_materializer_run(True)
+  summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+  summary["trajectory_type"] = "circle"
+  summary["circle"] = {
+      "center": {"x": 0.0, "y": 0.0, "z": 1.0},
+      "radius_m": 1.0,
+      "direction": direction,
+      "target_laps": 1.0,
+  }
+  for line_phase in ["LINE_FORWARD", "LINE_REVERSE", "LINE_RETURN"]:
+    summary["phase_times"].pop(line_phase, None)
+  summary["phase_times"].update({
+      "CLIMB": {"status": "reached", "start": 10.0, "end": 18.0},
+      "CLIMB_HOLD": {"status": "reached", "start": 18.0, "end": 20.0},
+      "CIRCLE_ENTRY": {"status": "reached", "start": 20.0, "end": 24.0},
+      "CIRCLE_LAP": {"status": "reached", "start": 24.0, "end": 40.0},
+      "CIRCLE_EXIT": {"status": "reached", "start": 40.0, "end": 44.0},
+      "CENTER_HOLD": {"status": "reached", "start": 44.0, "end": 54.0},
+      "LANDING_PREP": {"status": "reached", "start": 54.0, "end": 55.0},
+      "LANDING": {"status": "reached", "start": 55.0, "end": 66.0},
+      "COMPLETE": {"status": "reached", "start": 66.0, "end": 66.1},
+  })
+  summary["metrics"]["phase_metrics"].update({
+      "CIRCLE_ENTRY": {"status": "reached", "sample_count": 3, "coverage": 1.0,
+                       "horizontal_rms_m": 0.01, "height_mean_error_m": 0.0,
+                       "height_rms_m": 0.01, "max_speed_mps": 0.4,
+                       "horizontal_max_m": 0.02},
+      "CIRCLE_LAP": {"status": "reached", "sample_count": 33, "coverage": 1.0,
+                     "horizontal_rms_m": 0.05, "height_mean_error_m": 0.0,
+                     "height_rms_m": 0.02, "max_speed_mps": 0.4,
+                     "horizontal_max_m": 0.08},
+      "CIRCLE_EXIT": {"status": "reached", "sample_count": 3, "coverage": 1.0,
+                      "horizontal_rms_m": 0.01, "height_mean_error_m": 0.0,
+                      "height_rms_m": 0.01, "max_speed_mps": 0.4,
+                      "horizontal_max_m": 0.02},
+  })
+  write_text(run_dir / "summary.json", json.dumps(summary))
+  sign = -1.0 if direction == "cw" else 1.0
+  rows = ["time,target_x,target_y,target_z,actual_x,actual_y,actual_z,target_vx,target_vy,target_vz,actual_vx,actual_vy,actual_vz\n"]
+  rows.append("20.0,0.0,0.0,1.0,0.0,0.0,1.0,0,0,0,0,0,0\n")
+  first_actual_y = 0.01 if direction == "ccw" else -0.01
+  rows.append(f"23.999,1.0,0.0,1.0,1.05,{first_actual_y},1.0,0,0,0,0,0,0\n")
+  if include_near_center:
+    rows.append("24.5,0.0,0.0,1.0,0.0,0.0,1.0,0,0,0,0,0,0\n")
+  for index in range(33):
+    theta = sign * 2.0 * math.pi * index / 32.0
+    tx = math.cos(theta)
+    ty = math.sin(theta)
+    # Add a small deterministic radial and along-track error.
+    radial_error = 0.05
+    tangent_x = -math.sin(theta) * sign
+    tangent_y = math.cos(theta) * sign
+    ax = (1.0 + radial_error) * tx + 0.01 * tangent_x
+    ay = (1.0 + radial_error) * ty + 0.01 * tangent_y
+    rows.append(f"{24.0 + 16.0 * index / 32.0:.3f},{tx:.9f},{ty:.9f},1.0,"
+                f"{ax:.9f},{ay:.9f},1.0,0,0,0,0,0,0\n")
+  rows.append("44.0,0.0,0.0,1.0,0.02,0.0,1.0,0,0,0,0,0,0\n")
+  rows.append("54.0,0.0,0.0,1.0,0.02,0.0,1.0,0,0,0,0,0,0\n")
+  write_text(run_dir / "tracking_samples.csv", "".join(rows))
   return run_dir
 
 
@@ -475,8 +539,8 @@ class M0C5B1ProtocolTest(unittest.TestCase):
   def test_materializer_complete_success_generates_five_json_files(self):
     run_dir = make_materializer_run(True)
     result = materializer.materialize_run_dir(run_dir)
-    self.assertEqual(set(result["written"]), materializer.DERIVED_FILES)
-    for name in materializer.DERIVED_FILES:
+    self.assertEqual(set(result["written"]), materializer.BASE_DERIVED_FILES)
+    for name in materializer.BASE_DERIVED_FILES:
       payload = json.loads((run_dir / name).read_text(encoding="utf-8"))
       self.assertEqual(payload["schema_version"], 1)
       self.assertTrue(payload["generated_offline"])
@@ -534,13 +598,13 @@ class M0C5B1ProtocolTest(unittest.TestCase):
     materializer.materialize_run_dir(run_dir)
     before = {
         name: (run_dir / name).read_text(encoding="utf-8")
-        for name in materializer.DERIVED_FILES
+        for name in materializer.BASE_DERIVED_FILES
     }
     result = materializer.materialize_run_dir(run_dir)
-    self.assertEqual(set(result["unchanged"]), materializer.DERIVED_FILES)
+    self.assertEqual(set(result["unchanged"]), materializer.BASE_DERIVED_FILES)
     after = {
         name: (run_dir / name).read_text(encoding="utf-8")
-        for name in materializer.DERIVED_FILES
+        for name in materializer.BASE_DERIVED_FILES
     }
     self.assertEqual(before, after)
 
@@ -571,6 +635,108 @@ class M0C5B1ProtocolTest(unittest.TestCase):
     write_text(run_dir / "m0_c5b1_project_nodes.log", text.replace("pending_id=22", "pending_id=23"))
     with self.assertRaises(ValueError):
       materializer.materialize_run_dir(run_dir)
+
+  def test_circle_materializer_generates_circle_json(self):
+    run_dir = make_circle_materializer_run()
+    result = materializer.materialize_run_dir(run_dir)
+    self.assertIn("circle_metrics.json", result["written"])
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertEqual(circle["schema_version"], 1)
+    self.assertEqual(circle["target_radius_m"], 1.0)
+    self.assertEqual(circle["direction"], "ccw")
+    self.assertTrue(circle["circle_passed"])
+
+  def test_circle_radius_rms_and_radial_error(self):
+    run_dir = make_circle_materializer_run()
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertAlmostEqual(circle["radial_mean_error_m"], 0.05, places=3)
+    self.assertAlmostEqual(circle["radial_rms_error_m"], 0.05, places=3)
+    self.assertAlmostEqual(circle["radial_max_error_m"], 0.05, places=3)
+
+  def test_circle_along_track_error(self):
+    run_dir = make_circle_materializer_run()
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertAlmostEqual(circle["along_track_rms_error_m"], 0.01, places=6)
+    self.assertAlmostEqual(circle["along_track_max_error_m"], 0.01, places=6)
+
+  def test_circle_ccw_angle_coverage(self):
+    run_dir = make_circle_materializer_run("ccw")
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertGreaterEqual(circle["actual_angle_coverage_deg"], 359.0)
+    self.assertGreaterEqual(circle["completed_laps"], 0.99)
+
+  def test_circle_cw_angle_coverage(self):
+    run_dir = make_circle_materializer_run("cw")
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertGreaterEqual(circle["actual_angle_coverage_deg"], 359.0)
+    self.assertGreaterEqual(circle["completed_laps"], 0.99)
+
+  def test_circle_closure_error(self):
+    run_dir = make_circle_materializer_run()
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertLessEqual(circle["closure_error_m"], 0.02)
+
+  def test_circle_low_speed_near_center_samples_are_not_angles(self):
+    run_dir = make_circle_materializer_run(include_near_center=True)
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertGreaterEqual(circle["near_center_rejected_count"], 1)
+    self.assertGreaterEqual(circle["actual_angle_coverage_deg"], 359.0)
+
+  def test_circle_lap_phase_excludes_entry_and_exit(self):
+    run_dir = make_circle_materializer_run()
+    materializer.materialize_run_dir(run_dir)
+    phase = json.loads((run_dir / "phase_metrics.json").read_text(encoding="utf-8"))
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertEqual(phase["performance_phases"], materializer.CIRCLE_PERFORMANCE_PHASES)
+    self.assertEqual(circle["angle_sample_count"], 33)
+
+  def test_circle_phase_order_is_monotonic(self):
+    run_dir = make_circle_materializer_run()
+    result = materializer.materialize_run_dir(run_dir)
+    self.assertEqual(result["consistency_errors"], [])
+
+  def test_circle_early_failure_does_not_forge_metrics(self):
+    run_dir = make_materializer_run(False)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    summary["trajectory_type"] = "circle"
+    summary["circle"] = {"center": {"x": 0.0, "y": 0.0, "z": 1.0},
+                         "radius_m": 1.0, "direction": "ccw", "target_laps": 1.0}
+    write_text(run_dir / "summary.json", json.dumps(summary))
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertFalse(circle["circle_available"])
+    self.assertFalse(circle["circle_passed"])
+
+  def test_circle_missing_radius_or_laps_are_not_defaulted(self):
+    run_dir = make_materializer_run(False)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    summary["trajectory_type"] = "circle"
+    summary["circle"] = {"center": {"x": 0.0, "y": 0.0, "z": 1.0}, "direction": "ccw"}
+    write_text(run_dir / "summary.json", json.dumps(summary))
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    self.assertFalse(circle["circle_available"])
+    self.assertIn("radius", circle["reason"])
+    self.assertNotIn("target_radius_m", circle)
+    self.assertNotIn("target_laps", circle)
+
+  def test_circle_metrics_fields_complete(self):
+    run_dir = make_circle_materializer_run()
+    materializer.materialize_run_dir(run_dir)
+    circle = json.loads((run_dir / "circle_metrics.json").read_text(encoding="utf-8"))
+    for key in [
+        "circle_center", "target_radius_m", "direction", "target_laps",
+        "actual_angle_coverage_deg", "completed_laps", "radial_rms_error_m",
+        "radial_max_error_m", "along_track_rms_error_m", "closure_error_m",
+        "entry_to_lap_continuity", "lap_to_exit_continuity", "circle_passed",
+    ]:
+      self.assertIn(key, circle)
 
   def test_materializer_is_offline_only(self):
     source = MATERIALIZER_PATH.read_text(encoding="utf-8")

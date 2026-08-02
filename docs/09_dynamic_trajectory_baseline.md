@@ -70,15 +70,24 @@ acceleration are continuous at each boundary.
 Circle:
 
 ```text
-x = R cos(theta)
-y = R sin(theta)
-theta = 2*pi*s(t/T)
+x = x0 + R cos(theta)
+y = y0 + R sin(theta)
+theta = 2*pi*circle_laps*s(t/T)
 ```
 
-Velocity and acceleration are analytic derivatives using `theta_dot` and
-`theta_ddot`. The phase completes one full revolution with zero endpoint
-velocity and acceleration. Defaults are `R=1.0 m` and nominal tangent speed no
-more than `0.5 m/s`.
+The circle center is the supplied start pose horizontal position `(x0, y0)`.
+The entry transition moves from the center to `(x0 + R, y0)`; the default
+positive `theta` direction is counter-clockwise in ENU, with the first tangent
+toward positive `y`. The circle phase completes `circle_laps` revolutions
+(`1.0` by default) with zero endpoint velocity and acceleration because the
+same fifth-order scalar `s(t/T)` time law is applied to angle. The exit
+transition starts from the actual final circle point and returns to the center.
+Defaults are `R=1.0 m` and nominal tangent speed no more than `0.5 m/s`; the
+M0-C5B2A offline circle protocol uses `0.4 m/s`, one lap, and four-second
+entry/exit transitions.
+
+`circle_laps` is part of the deterministic trajectory identifier. The same
+configuration produces the same `trajectory_id`; no randomization is used.
 
 Figure eight:
 
@@ -163,3 +172,13 @@ Optional delay estimation uses discrete cross-correlation of target and actual
 horizontal displacement magnitudes on the common resampled grid. This is only a
 descriptive estimate under matching-motion conditions; it is not proof of true
 system latency.
+
+## Circle Tracking Preparation
+
+M0-C5B2A adds offline circle experiment definitions and `circle_metrics.json`
+materialization. The metrics use only `CIRCLE_LAP` for lap geometry and keep
+`CIRCLE_ENTRY`, `CIRCLE_EXIT`, `LANDING_PREP`, and `LANDING` separate. Actual
+angle coverage is computed with continuous unwrap in the declared direction;
+near-center samples are excluded from angle coverage because their bearing is
+not meaningful. This preparation did not execute PX4, Gazebo, MAVROS,
+OFFBOARD, arming, `AUTO.LAND`, or flight.

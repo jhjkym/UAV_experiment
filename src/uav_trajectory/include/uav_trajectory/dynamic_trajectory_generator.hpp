@@ -37,6 +37,7 @@ struct DynamicTrajectoryConfig {
   double line_segment_duration_sec = 5.0;
   double circle_radius_m = 1.0;
   double circle_tangent_speed_mps = 0.5;
+  double circle_laps = 1.0;
   double transition_duration_sec = 2.0;
   double figure8_amplitude_x_m = 1.0;
   double figure8_amplitude_y_m = 0.5;

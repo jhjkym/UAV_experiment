@@ -14,6 +14,8 @@ line_length_m: 1.0
 line_segment_duration_sec: 5.0
 circle_radius_m: 1.0
 circle_tangent_speed_mps: 0.5
+circle_tangential_speed_mps: 0.5
+circle_laps: 1.0
 transition_duration_sec: 2.0
 figure8_amplitude_x_m: 1.0
 figure8_amplitude_y_m: 0.5

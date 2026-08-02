@@ -102,3 +102,15 @@ M0-C5B1 SITL line tracking:
   materializes derived JSON artifacts without starting ROS, PX4, Gazebo,
   MAVROS, arming, OFFBOARD, or landing services.
 - Run artifacts are written to `/tmp/uav_m0_c5b1/` and are not tracked by Git.
+
+M0-C5B2A circle tracking preparation:
+- Reuses the M0-C5A `uav_trajectory` C++ generator and the M0-C5B1 offline
+  materialization pattern.
+- Adds no new dependency on `mavros_msgs`, Gazebo messages, PX4 source, serial
+  devices, or non-standard Python packages.
+- `circle_metrics.json` is generated offline from existing summaries and
+  tracking CSV data; it does not start ROS, PX4, Gazebo, MAVROS, arming,
+  OFFBOARD, or landing services.
+- The C5B2A stage did not perform a circle SITL flight. Future circle flight
+  execution remains PX4 SITL-only and must use the same authorization and
+  hardware-rejection boundary as C5B1.

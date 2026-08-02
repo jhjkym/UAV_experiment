@@ -2,6 +2,7 @@
 """Materialize derived M0-C5B1 JSON artifacts from an existing run directory."""
 
 import argparse
+import csv
 import hashlib
 import json
 import math
@@ -12,13 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
-DERIVED_FILES = {
+BASE_DERIVED_FILES = {
     "delivery_diagnostics.json",
     "handoff_metrics.json",
     "phase_metrics.json",
     "landing_lifecycle_metrics.json",
     "recovery_metrics.json",
 }
+CIRCLE_DERIVED_FILES = {"circle_metrics.json"}
+DERIVED_FILES = BASE_DERIVED_FILES | CIRCLE_DERIVED_FILES
 
 PHASES = [
     "PREFLIGHT",
@@ -28,6 +31,9 @@ PHASES = [
     "PENDING_HANDOFF",
     "CLIMB",
     "CLIMB_HOLD",
+    "CIRCLE_ENTRY",
+    "CIRCLE_LAP",
+    "CIRCLE_EXIT",
     "LINE_FORWARD",
     "LINE_REVERSE",
     "LINE_RETURN",
@@ -38,11 +44,84 @@ PHASES = [
 ]
 
 PERFORMANCE_PHASES = ["LINE_FORWARD", "LINE_REVERSE", "LINE_RETURN", "CENTER_HOLD"]
+CIRCLE_PERFORMANCE_PHASES = ["CIRCLE_LAP", "CENTER_HOLD"]
 RUN_RE = re.compile(r"run_\d{8}_\d{6}")
+TWO_PI = 2.0 * math.pi
 
 
 def unavailable(reason: str = "not recorded") -> Dict[str, Any]:
   return {"value": None, "available": False, "reason": reason}
+
+
+def is_unavailable(value: Any) -> bool:
+  return isinstance(value, dict) and value.get("available") is False
+
+
+def numeric(value: Any) -> Optional[float]:
+  if value is None or is_unavailable(value):
+    return None
+  if isinstance(value, (int, float)) and math.isfinite(float(value)):
+    return float(value)
+  return None
+
+
+def mean(values: List[float]) -> Optional[float]:
+  return sum(values) / len(values) if values else None
+
+
+def rms(values: List[float]) -> Optional[float]:
+  return math.sqrt(sum(value * value for value in values) / len(values)) if values else None
+
+
+def max_abs(values: List[float]) -> Optional[float]:
+  return max((abs(value) for value in values), default=None)
+
+
+def unwrap_angles(angles: List[float], direction: str = "ccw") -> List[float]:
+  if not angles:
+    return []
+  sign = -1.0 if direction == "cw" else 1.0
+  unwrapped = [angles[0]]
+  previous = angles[0]
+  for angle in angles[1:]:
+    value = angle
+    while sign * (value - previous) < -math.pi:
+      value += sign * TWO_PI
+    while sign * (value - previous) > math.pi:
+      value -= sign * TWO_PI
+    unwrapped.append(value)
+    previous = value
+  return unwrapped
+
+
+def phase_range(summary: Dict[str, Any], phase: str) -> Optional[Tuple[float, float]]:
+  info = summary.get("phase_times", {}).get(phase, {})
+  if info.get("status") != "reached":
+    return None
+  start = numeric(info.get("start"))
+  end = numeric(info.get("end"))
+  if start is None or end is None or end < start:
+    return None
+  return start, end
+
+
+def read_tracking_samples(path: Path) -> List[Dict[str, float]]:
+  if not path.exists():
+    return []
+  samples: List[Dict[str, float]] = []
+  with path.open("r", encoding="utf-8", newline="") as handle:
+    reader = csv.DictReader(handle)
+    for row_index, row in enumerate(reader, start=2):
+      sample: Dict[str, float] = {}
+      for key, value in row.items():
+        if value is None or value == "":
+          continue
+        parsed = float(value)
+        if not math.isfinite(parsed):
+          raise ValueError(f"non-finite tracking sample at line {row_index} column {key}")
+        sample[key] = parsed
+      samples.append(sample)
+  return samples
 
 
 def read_json(path: Path) -> Dict[str, Any]:
@@ -205,6 +284,9 @@ def phase_payload(summary: Dict[str, Any], tracking: Dict[str, Any], run_dir: Pa
   payload = base(run_dir, ["summary.json", "tracking_metrics.json"])
   phase_times = summary.get("phase_times", {})
   embedded = summary.get("metrics", {}).get("phase_metrics", {})
+  performance_phases = (CIRCLE_PERFORMANCE_PHASES
+                        if summary.get("trajectory_type") == "circle"
+                        else PERFORMANCE_PHASES)
   phases: Dict[str, Any] = {}
   for phase in PHASES:
     if phase == "PENDING_HANDOFF" and project.get("pending_observed"):
@@ -248,7 +330,7 @@ def phase_payload(summary: Dict[str, Any], tracking: Dict[str, Any], run_dir: Pa
         "max_actual_acceleration_mps2": unavailable("not recorded per phase"),
     }
   payload["phases"] = phases
-  payload["performance_phases"] = PERFORMANCE_PHASES
+  payload["performance_phases"] = performance_phases
   payload["performance_aggregate"] = {
       "source": "tracking_metrics.json",
       "horizontal_rms_m": tracking.get("horizontal_rms_error_m"),
@@ -385,6 +467,221 @@ def recovery_payload(summary: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
   return payload
 
 
+def circle_config(summary: Dict[str, Any]) -> Dict[str, Any]:
+  circle = summary.get("circle") if isinstance(summary.get("circle"), dict) else {}
+  start = summary.get("start_position") if isinstance(summary.get("start_position"), dict) else {}
+  target = summary.get("target_position") if isinstance(summary.get("target_position"), dict) else {}
+  center = circle.get("center")
+  if center is None:
+    center = {
+        "x": start.get("x", target.get("x")),
+        "y": start.get("y", target.get("y")),
+        "z": target.get("z", start.get("z")),
+    }
+  radius = circle.get("radius_m", summary.get("circle_radius_m"))
+  return {
+      "center": center,
+      "radius_m": radius,
+      "direction": circle.get("direction", summary.get("circle_direction", "ccw")),
+      "target_laps": circle.get("target_laps", summary.get("circle_laps")),
+      "entry_phase": circle.get("entry_phase", "CIRCLE_ENTRY"),
+      "lap_phase": circle.get("lap_phase", "CIRCLE_LAP"),
+      "exit_phase": circle.get("exit_phase", "CIRCLE_EXIT"),
+  }
+
+
+def coordinate(container: Any, key: str) -> Optional[float]:
+  if isinstance(container, dict):
+    return numeric(container.get(key))
+  if isinstance(container, list):
+    index = {"x": 0, "y": 1, "z": 2}[key]
+    return numeric(container[index]) if len(container) > index else None
+  return None
+
+
+def circle_samples_for_phase(samples: List[Dict[str, float]], time_range: Tuple[float, float],
+                             prefix: str = "actual") -> List[Dict[str, float]]:
+  start, end = time_range
+  required = ["time", f"{prefix}_x", f"{prefix}_y", "target_x", "target_y"]
+  selected = []
+  for sample in samples:
+    if not all(key in sample for key in required):
+      continue
+    if start - 1e-9 <= sample["time"] <= end + 1e-9:
+      selected.append(sample)
+  return selected
+
+
+def compute_circle_kinematics(samples: List[Dict[str, float]], center_x: float, center_y: float,
+                              radius: float, direction: str) -> Dict[str, Any]:
+  if radius <= 0.0 or not math.isfinite(radius):
+    raise ValueError("circle radius must be finite and positive")
+  sign = -1.0 if direction == "cw" else 1.0
+  min_angle_radius = 0.25 * radius
+  angles: List[float] = []
+  radial_errors: List[float] = []
+  along_errors: List[float] = []
+  horizontal_errors: List[float] = []
+  rejected_near_center = 0
+  valid_positions: List[Tuple[float, float]] = []
+  for sample in samples:
+    actual_dx = sample["actual_x"] - center_x
+    actual_dy = sample["actual_y"] - center_y
+    target_dx = sample["target_x"] - center_x
+    target_dy = sample["target_y"] - center_y
+    actual_radius = math.hypot(actual_dx, actual_dy)
+    target_radius = math.hypot(target_dx, target_dy)
+    horizontal_errors.append(math.hypot(sample["actual_x"] - sample["target_x"],
+                                        sample["actual_y"] - sample["target_y"]))
+    if actual_radius < min_angle_radius or target_radius < min_angle_radius:
+      rejected_near_center += 1
+      continue
+    target_angle = math.atan2(target_dy, target_dx)
+    tangent_x = -math.sin(target_angle) * sign
+    tangent_y = math.cos(target_angle) * sign
+    error_x = sample["actual_x"] - sample["target_x"]
+    error_y = sample["actual_y"] - sample["target_y"]
+    angles.append(math.atan2(actual_dy, actual_dx))
+    radial_errors.append(actual_radius - radius)
+    along_errors.append(error_x * tangent_x + error_y * tangent_y)
+    valid_positions.append((sample["actual_x"], sample["actual_y"]))
+  unwrapped = unwrap_angles(angles, direction)
+  coverage = abs(unwrapped[-1] - unwrapped[0]) if len(unwrapped) >= 2 else None
+  closure = None
+  if len(valid_positions) >= 2:
+    closure = math.hypot(valid_positions[-1][0] - valid_positions[0][0],
+                         valid_positions[-1][1] - valid_positions[0][1])
+  return {
+      "sample_count": len(samples),
+      "angle_sample_count": len(unwrapped),
+      "near_center_rejected_count": rejected_near_center,
+      "actual_angle_coverage_rad": coverage,
+      "actual_angle_coverage_deg": math.degrees(coverage) if coverage is not None else None,
+      "completed_laps": coverage / TWO_PI if coverage is not None else None,
+      "radial_mean_error_m": mean(radial_errors),
+      "radial_rms_error_m": rms(radial_errors),
+      "radial_max_error_m": max_abs(radial_errors),
+      "along_track_rms_error_m": rms(along_errors),
+      "along_track_max_error_m": max_abs(along_errors),
+      "circle_horizontal_rms_error_m": rms(horizontal_errors),
+      "circle_horizontal_max_error_m": max_abs(horizontal_errors),
+      "closure_error_m": closure,
+  }
+
+
+def phase_endpoint_jump(samples: List[Dict[str, float]], before_range: Optional[Tuple[float, float]],
+                        after_range: Optional[Tuple[float, float]]) -> Dict[str, Any]:
+  if before_range is None or after_range is None:
+    return unavailable("phase endpoint not reached")
+  before = circle_samples_for_phase(samples, before_range)
+  after = circle_samples_for_phase(samples, after_range)
+  if not before or not after:
+    return unavailable("tracking samples missing")
+  lhs = before[-1]
+  rhs = after[0]
+  return {
+      "position_jump_m": math.hypot(lhs["target_x"] - rhs["target_x"],
+                                    lhs["target_y"] - rhs["target_y"]),
+      "available": True,
+  }
+
+
+def circle_payload(summary: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
+  payload = base(run_dir, ["summary.json", "tracking_samples.csv"])
+  config = circle_config(summary)
+  center = config["center"]
+  center_x = coordinate(center, "x")
+  center_y = coordinate(center, "y")
+  center_z = coordinate(center, "z")
+  radius = numeric(config["radius_m"])
+  target_laps = numeric(config["target_laps"])
+  if center_x is None or center_y is None or radius is None or target_laps is None:
+    payload.update({
+        "circle_available": False,
+        "reason": "circle center, radius, or target laps not recorded",
+        "circle_passed": False,
+    })
+    return payload
+  samples = read_tracking_samples(run_dir / "tracking_samples.csv")
+  lap_range = phase_range(summary, config["lap_phase"])
+  if not samples or lap_range is None:
+    payload.update({
+        "circle_available": False,
+        "reason": "tracking samples or CIRCLE_LAP phase not recorded",
+        "circle_passed": False,
+        "circle_center": {"x": center_x, "y": center_y, "z": center_z},
+        "target_radius_m": radius,
+        "direction": config["direction"],
+        "target_laps": target_laps,
+    })
+    return payload
+  lap_samples = circle_samples_for_phase(samples, lap_range)
+  metrics = compute_circle_kinematics(lap_samples, center_x, center_y, radius,
+                                      str(config["direction"]))
+  target_angles = []
+  for sample in lap_samples:
+    target_radius = math.hypot(sample["target_x"] - center_x, sample["target_y"] - center_y)
+    if target_radius >= 0.25 * radius:
+      target_angles.append(math.atan2(sample["target_y"] - center_y,
+                                      sample["target_x"] - center_x))
+  target_unwrapped = unwrap_angles(target_angles, str(config["direction"]))
+  target_coverage = (abs(target_unwrapped[-1] - target_unwrapped[0])
+                     if len(target_unwrapped) >= 2 else None)
+  entry_range = phase_range(summary, config["entry_phase"])
+  exit_range = phase_range(summary, config["exit_phase"])
+  center_range = phase_range(summary, "CENTER_HOLD")
+  center_error = unavailable("CENTER_HOLD samples not recorded")
+  if center_range is not None:
+    center_samples = circle_samples_for_phase(samples, center_range)
+    if center_samples:
+      final = center_samples[-1]
+      center_error = math.hypot(final["actual_x"] - center_x, final["actual_y"] - center_y)
+  payload.update({
+      "circle_available": True,
+      "circle_center": {"x": center_x, "y": center_y, "z": center_z},
+      "target_radius_m": radius,
+      "direction": config["direction"],
+      "target_laps": target_laps,
+      "target_angle_coverage_rad": target_coverage,
+      "target_angle_coverage_deg": math.degrees(target_coverage) if target_coverage is not None else None,
+      "actual_angle_coverage_rad": metrics["actual_angle_coverage_rad"],
+      "actual_angle_coverage_deg": metrics["actual_angle_coverage_deg"],
+      "completed_laps": metrics["completed_laps"],
+      "radial_mean_error_m": metrics["radial_mean_error_m"],
+      "radial_rms_error_m": metrics["radial_rms_error_m"],
+      "radial_max_error_m": metrics["radial_max_error_m"],
+      "along_track_rms_error_m": metrics["along_track_rms_error_m"],
+      "along_track_max_error_m": metrics["along_track_max_error_m"],
+      "circle_horizontal_rms_error_m": metrics["circle_horizontal_rms_error_m"],
+      "circle_horizontal_max_error_m": metrics["circle_horizontal_max_error_m"],
+      "closure_error_m": metrics["closure_error_m"],
+      "entry_max_error_m": summary.get("metrics", {}).get("phase_metrics", {}).get("CIRCLE_ENTRY", {}).get("horizontal_max_m"),
+      "lap_max_error_m": metrics["circle_horizontal_max_error_m"],
+      "exit_max_error_m": summary.get("metrics", {}).get("phase_metrics", {}).get("CIRCLE_EXIT", {}).get("horizontal_max_m"),
+      "exit_center_endpoint_error_m": center_error,
+      "entry_to_lap_continuity": phase_endpoint_jump(samples, entry_range, lap_range),
+      "lap_to_exit_continuity": phase_endpoint_jump(samples, lap_range, exit_range),
+      "angle_sample_count": metrics["angle_sample_count"],
+      "near_center_rejected_count": metrics["near_center_rejected_count"],
+  })
+  payload["circle_passed"] = (
+      numeric(payload["circle_horizontal_rms_error_m"]) is not None and
+      payload["circle_horizontal_rms_error_m"] <= 0.30 and
+      numeric(payload["circle_horizontal_max_error_m"]) is not None and
+      payload["circle_horizontal_max_error_m"] <= 0.60 and
+      numeric(payload["radial_rms_error_m"]) is not None and
+      payload["radial_rms_error_m"] <= 0.25 and
+      numeric(payload["radial_max_error_m"]) is not None and
+      payload["radial_max_error_m"] <= 0.50 and
+      numeric(payload["actual_angle_coverage_deg"]) is not None and
+      payload["actual_angle_coverage_deg"] >= 350.0 and
+      numeric(payload["completed_laps"]) is not None and payload["completed_laps"] >= 0.97 and
+      numeric(payload["closure_error_m"]) is not None and payload["closure_error_m"] <= 0.30 and
+      numeric(payload["exit_center_endpoint_error_m"]) is not None and
+      payload["exit_center_endpoint_error_m"] <= 0.25)
+  return payload
+
+
 def validate_consistency(outputs: Dict[str, Dict[str, Any]], summary: Dict[str, Any],
                          tracking: Dict[str, Any]) -> List[str]:
   errors: List[str] = []
@@ -396,6 +693,11 @@ def validate_consistency(outputs: Dict[str, Dict[str, Any]], summary: Dict[str, 
   landing = outputs["landing_lifecycle_metrics.json"]
   if delivery.get("trajectory_id") != handoff.get("flight_trajectory_id"):
     errors.append("trajectory ID mismatch between delivery and handoff")
+  if "circle_metrics.json" in outputs:
+    circle = outputs["circle_metrics.json"]
+    if circle.get("circle_available") and circle.get("target_radius_m") is not None:
+      if circle["target_radius_m"] <= 0.0:
+        errors.append("circle radius must be positive")
   if handoff.get("planned_switch_time") and handoff.get("actual_switch_time"):
     if abs(handoff["actual_switch_time"] - handoff["planned_switch_time"]) - handoff["switch_timing_error_sec"] > 1e-3:
       errors.append("handoff timing error inconsistent")
@@ -442,6 +744,8 @@ def materialize_run_dir(run_dir: Path, overwrite_derived_only: bool = False) -> 
       "landing_lifecycle_metrics.json": landing_payload(summary, run_dir),
       "recovery_metrics.json": recovery_payload(summary, run_dir),
   }
+  if summary.get("trajectory_type") == "circle":
+    outputs["circle_metrics.json"] = circle_payload(summary, run_dir)
   errors = validate_consistency(outputs, summary, tracking)
   if errors:
     raise ValueError("; ".join(errors))

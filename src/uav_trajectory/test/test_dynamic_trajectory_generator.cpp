@@ -11,6 +11,7 @@
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kTwoPi = 2.0 * kPi;
 
 uav_trajectory::DynamicTrajectoryConfig baseConfig(
     const uav_trajectory::DynamicTrajectoryType type) {
@@ -64,6 +65,43 @@ double accel(const uav_msgs::TrajectoryPoint& point) {
 double horizontalDistance(const uav_msgs::TrajectoryPoint& point,
                           const uav_trajectory::StartPose& start) {
   return std::hypot(point.position.x - start.x, point.position.y - start.y);
+}
+
+const uav_msgs::TrajectoryPoint& nearestPoint(const uav_msgs::Trajectory& trajectory,
+                                              const double time_from_start) {
+  auto it = std::min_element(
+      trajectory.points.begin(), trajectory.points.end(),
+      [time_from_start](const auto& lhs, const auto& rhs) {
+        return std::abs(lhs.time_from_start.toSec() - time_from_start) <
+               std::abs(rhs.time_from_start.toSec() - time_from_start);
+      });
+  return *it;
+}
+
+double horizontalJump(const uav_msgs::TrajectoryPoint& lhs,
+                      const uav_msgs::TrajectoryPoint& rhs) {
+  return std::hypot(lhs.position.x - rhs.position.x, lhs.position.y - rhs.position.y);
+}
+
+double derivativeJump(const geometry_msgs::Vector3& lhs,
+                      const geometry_msgs::Vector3& rhs) {
+  return std::sqrt((lhs.x - rhs.x) * (lhs.x - rhs.x) +
+                   (lhs.y - rhs.y) * (lhs.y - rhs.y) +
+                   (lhs.z - rhs.z) * (lhs.z - rhs.z));
+}
+
+double unwrapForward(const double previous, const double value) {
+  double unwrapped = value;
+  while (unwrapped < previous - kPi) {
+    unwrapped += kTwoPi;
+  }
+  while (unwrapped > previous + kPi) {
+    unwrapped -= kTwoPi;
+  }
+  if (unwrapped < previous) {
+    unwrapped += kTwoPi;
+  }
+  return unwrapped;
 }
 
 std::vector<double> yaws(const uav_msgs::Trajectory& trajectory) {
@@ -240,6 +278,104 @@ TEST(DynamicCircle, RadiusClosureVelocityAndAcceleration) {
   EXPECT_NEAR(trajectory.points.back().position.y, start.y, 1e-6);
   EXPECT_NEAR(speed(trajectory.points.front()), 0.0, 1e-9);
   EXPECT_NEAR(speed(trajectory.points.back()), 0.0, 1e-6);
+}
+
+TEST(DynamicCircle, C5B2AOneLapGeometryAndContinuity) {
+  auto config = baseConfig(uav_trajectory::DynamicTrajectoryType::kCircle);
+  config.start_delay_sec = 1.0;
+  config.initial_hold_sec = 1.0;
+  config.initial_climb_duration_sec = 8.0;
+  config.post_climb_hold_sec = 2.0;
+  config.circle_radius_m = 1.0;
+  config.circle_tangent_speed_mps = 0.4;
+  config.circle_laps = 1.0;
+  config.transition_duration_sec = 4.0;
+  config.duration_sec = 24.0;
+  config.hold_end_sec = 70.0;
+  config.yaw_mode = uav_trajectory::YawMode::kFixed;
+  const auto start = startPose();
+
+  const auto result = uav_trajectory::generateDynamicTrajectory(config, start);
+  ASSERT_TRUE(result.valid) << result.reason;
+  const auto& trajectory = result.trajectory;
+  ASSERT_GT(trajectory.points.size(), 2000u);
+  EXPECT_NE(result.trace_id.find("_laps1.000"), std::string::npos);
+
+  const double scale = result.time_scale;
+  const double hold0 = config.initial_hold_sec * scale;
+  const double climb = config.initial_climb_duration_sec * scale;
+  const double post_climb = config.post_climb_hold_sec * scale;
+  const double transition = config.transition_duration_sec * scale;
+  const double circle_duration =
+      std::max(config.duration_sec * scale - 2.0 * transition,
+               kTwoPi * config.circle_radius_m / config.circle_tangent_speed_mps * scale);
+  const double entry_start_t = hold0 + climb + post_climb;
+  const double circle_start_t = entry_start_t + transition;
+  const double circle_end_t = circle_start_t + circle_duration;
+  const double exit_end_t = circle_end_t + transition;
+
+  const auto& entry_start = nearestPoint(trajectory, entry_start_t);
+  const auto& circle_start = nearestPoint(trajectory, circle_start_t);
+  const auto& circle_end = nearestPoint(trajectory, circle_end_t);
+  const auto& exit_end = nearestPoint(trajectory, exit_end_t);
+
+  EXPECT_NEAR(entry_start.position.x, start.x, 1e-6);
+  EXPECT_NEAR(entry_start.position.y, start.y, 1e-6);
+  EXPECT_NEAR(entry_start.position.z, start.z + config.altitude_offset_m, 1e-6);
+  EXPECT_NEAR(circle_start.position.x, start.x + config.circle_radius_m, 1e-6);
+  EXPECT_NEAR(circle_start.position.y, start.y, 1e-6);
+  EXPECT_NEAR(circle_end.position.x, start.x + config.circle_radius_m, 1e-6);
+  EXPECT_NEAR(circle_end.position.y, start.y, 1e-6);
+  EXPECT_NEAR(exit_end.position.x, start.x, 1e-6);
+  EXPECT_NEAR(exit_end.position.y, start.y, 1e-6);
+  EXPECT_NEAR(speed(circle_start), 0.0, 1e-6);
+  EXPECT_NEAR(accel(circle_start), 0.0, 1e-6);
+  EXPECT_NEAR(speed(circle_end), 0.0, 1e-6);
+  EXPECT_NEAR(accel(circle_end), 0.0, 1e-6);
+  EXPECT_NEAR(speed(exit_end), 0.0, 1e-6);
+  EXPECT_NEAR(accel(exit_end), 0.0, 1e-6);
+
+  double radius_sq_sum = 0.0;
+  double max_radius_error = 0.0;
+  double previous_angle = 0.0;
+  double first_angle = 0.0;
+  double last_angle = 0.0;
+  bool have_angle = false;
+  std::size_t circle_samples = 0;
+  for (const auto& point : trajectory.points) {
+    const double t = point.time_from_start.toSec();
+    if (t + 1e-9 < circle_start_t || t > circle_end_t + 1e-9) {
+      continue;
+    }
+    const double dx = point.position.x - start.x;
+    const double dy = point.position.y - start.y;
+    const double radius = std::hypot(dx, dy);
+    const double error = radius - config.circle_radius_m;
+    radius_sq_sum += error * error;
+    max_radius_error = std::max(max_radius_error, std::abs(error));
+    const double angle = std::atan2(dy, dx);
+    if (!have_angle) {
+      first_angle = angle;
+      previous_angle = angle;
+      have_angle = true;
+    } else {
+      previous_angle = unwrapForward(previous_angle, angle);
+    }
+    last_angle = previous_angle;
+    ++circle_samples;
+  }
+  ASSERT_GT(circle_samples, 10u);
+  const double radius_rms = std::sqrt(radius_sq_sum / static_cast<double>(circle_samples));
+  EXPECT_LE(radius_rms, 0.01);
+  EXPECT_LE(max_radius_error, 0.03);
+  EXPECT_NEAR(last_angle - first_angle, kTwoPi, 0.03);
+  EXPECT_NEAR(horizontalJump(circle_start, circle_end), 0.0, 0.02);
+  EXPECT_NEAR(derivativeJump(circle_start.velocity, circle_end.velocity), 0.0, 1e-6);
+  EXPECT_NEAR(derivativeJump(circle_start.acceleration, circle_end.acceleration), 0.0, 1e-5);
+  EXPECT_NEAR(trajectory.points.back().position.x, start.x, 1e-9);
+  EXPECT_NEAR(trajectory.points.back().position.y, start.y, 1e-9);
+  EXPECT_NEAR(speed(trajectory.points.back()), 0.0, 1e-12);
+  EXPECT_NEAR(accel(trajectory.points.back()), 0.0, 1e-12);
 }
 
 TEST(DynamicFigure8, CenterCrossingVelocityAndAcceleration) {

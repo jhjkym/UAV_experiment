@@ -638,3 +638,32 @@ final armed=false
 
 This stage does not execute circle tracking, figure-eight tracking, stream-loss
 tests, obstacle simulation, or real aircraft flight.
+
+## C5B2A Circle Preparation
+
+M0-C5B2A extends the offline protocol and artifact tooling for the next
+circle-tracking SITL stage while preserving the accepted C5B1 line lifecycle.
+The shared lifecycle remains ground-hold, prestream, OFFBOARD, arming, pending
+handoff, dynamic trajectory execution, landing reserve, `AUTO.LAND`, automatic
+disarm, and post-disarm bag recording. Circle-specific behavior is injected
+through dynamic trajectory configuration and offline metrics rather than by
+copying the C5B1 state machine.
+
+The prepared circle phase sequence is:
+
+```text
+CLIMB
+-> CLIMB_HOLD
+-> CIRCLE_ENTRY
+-> CIRCLE_LAP
+-> CIRCLE_EXIT
+-> CENTER_HOLD
+-> LANDING_PREP
+-> LANDING
+```
+
+The C5B2A materializer can produce `circle_metrics.json` with target center,
+radius, direction, lap coverage, completed laps, radial and along-track errors,
+closure error, entry/exit continuity, and center endpoint error. This stage did
+not start PX4, Gazebo, MAVROS, OFFBOARD, arming, real `AUTO.LAND`, or any
+flight. M0-C5B2 circle SITL flight remains pending.
