@@ -97,4 +97,8 @@ M0-C5B1 SITL line tracking:
 - R1 publishes a ground-hold trajectory for prestream, OFFBOARD, and arming,
   then starts the dynamic trajectory publisher only after `armed=true`; this
   keeps trajectory generation outside production nodes.
+- `scripts/analysis/materialize_m0_c5b1_artifacts.py` is an offline Python
+  standard-library tool. It reads existing M0-C5B1 run files from `/tmp` and
+  materializes derived JSON artifacts without starting ROS, PX4, Gazebo,
+  MAVROS, arming, OFFBOARD, or landing services.
 - Run artifacts are written to `/tmp/uav_m0_c5b1/` and are not tracked by Git.

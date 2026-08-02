@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 import pathlib
 import tempfile
 import time
@@ -16,6 +17,13 @@ SPEC = importlib.util.spec_from_file_location("m0_c5b1_sitl_line", SCRIPT_PATH)
 m0 = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(m0)
+
+MATERIALIZER_PATH = SCRIPT_PATH.parents[1] / "analysis" / "materialize_m0_c5b1_artifacts.py"
+MATERIALIZER_SPEC = importlib.util.spec_from_file_location("materialize_m0_c5b1_artifacts",
+                                                           MATERIALIZER_PATH)
+materializer = importlib.util.module_from_spec(MATERIALIZER_SPEC)
+assert MATERIALIZER_SPEC.loader is not None
+MATERIALIZER_SPEC.loader.exec_module(materializer)
 
 
 def point(x, y, z, vx=0.0, vy=0.0, vz=0.0, ax=0.0, ay=0.0, az=0.0):
@@ -114,6 +122,120 @@ def make_recovery_experiment(armed=True, mode="OFFBOARD"):
   experiment.call_set_output = call_set_output
   experiment.wait_for_disarm_stable = wait_disarmed
   return experiment
+
+
+def write_text(path, text):
+  path.write_text(text, encoding="utf-8")
+
+
+def make_materializer_run(success=True):
+  run_dir = pathlib.Path(tempfile.mkdtemp(prefix="run_20260802_162751_"))
+  metrics = {
+      "setpoint_average_rate_hz": 30.0,
+      "max_setpoint_gap_before_land_request": 0.034,
+      "adapter_fault_count": 0,
+      "adapter_fault_before_land_request": 0,
+      "adapter_fault_before_land_confirm": 0,
+      "final_armed": False,
+      "landing_reserve_sec": 60.0,
+      "reserve_remaining_at_land_request_sec": 59.929,
+      "reserve_remaining_at_land_confirm_sec": 58.925,
+      "land_request_to_confirm_sec": 1.004,
+      "land_confirm_to_output_gate_close_sec": 0.0101,
+      "mode_at_output_gate_close": "AUTO.LAND",
+      "landing_to_disarm_sec": 9.076,
+      "nan_or_inf_count": 0,
+      "phase_metrics": {
+          "LINE_FORWARD": {
+              "status": "reached", "sample_count": 2, "duration_sec": 5.0,
+              "horizontal_rms_m": 0.05, "height_mean_error_m": 0.01,
+              "height_rms_m": 0.02, "max_speed_mps": 0.4, "coverage": 1.0,
+          },
+          "LINE_REVERSE": {
+              "status": "reached", "sample_count": 2, "duration_sec": 5.0,
+              "horizontal_rms_m": 0.06, "height_mean_error_m": 0.01,
+              "height_rms_m": 0.02, "max_speed_mps": 0.5, "coverage": 1.0,
+          },
+          "LINE_RETURN": {
+              "status": "reached", "sample_count": 2, "duration_sec": 5.0,
+              "horizontal_rms_m": 0.07, "height_mean_error_m": 0.01,
+              "height_rms_m": 0.02, "max_speed_mps": 0.4, "coverage": 1.0,
+          },
+          "CENTER_HOLD": {
+              "status": "reached", "sample_count": 2, "duration_sec": 10.0,
+              "horizontal_rms_m": 0.04, "height_mean_error_m": 0.01,
+              "height_rms_m": 0.02, "max_speed_mps": 0.1, "coverage": 1.0,
+          },
+      },
+  }
+  phase_times = {
+      "PREFLIGHT": {"status": "reached", "start": 1.0, "end": 2.0},
+      "PRESTREAM": {"status": "reached", "start": 2.0, "end": 4.0},
+      "OFFBOARD_PREARM": {"status": "reached", "start": 4.0, "end": 8.0},
+      "ARMED_HOLD": {"status": "reached", "start": 8.0, "end": 10.0},
+      "CLIMB": {"status": "reached", "start": 10.0, "end": 20.0},
+      "LINE_FORWARD": {"status": "reached", "start": 20.0, "end": 25.0},
+      "LINE_REVERSE": {"status": "reached", "start": 25.0, "end": 30.0},
+      "LINE_RETURN": {"status": "reached", "start": 30.0, "end": 35.0},
+      "CENTER_HOLD": {"status": "reached", "start": 35.0, "end": 45.0},
+      "LANDING_PREP": {"status": "reached", "start": 45.0, "end": 46.0},
+      "LANDING": {"status": "reached", "start": 46.0, "end": 58.0},
+      "COMPLETE": {"status": "reached", "start": 58.0, "end": 58.1},
+  }
+  summary = {
+      "run_dir": str(run_dir),
+      "status": "complete" if success else "failed",
+      "ground_hold_trajectory_id": 11,
+      "flight_trajectory_id": 22 if success else None,
+      "flight_trajectory_stamp": 9.5,
+      "center_hold_end_time": 45.0,
+      "land_request_time": 45.1 if success else None,
+      "land_confirm_time": 46.0 if success else None,
+      "land_service_call_started_at": 45.1 if success else None,
+      "land_service_response_at": 45.2 if success else None,
+      "land_mode_first_observed_at": 46.0 if success else None,
+      "offboard_last_observed_at": 45.9 if success else None,
+      "output_gate_close_requested_at": 46.01 if success else None,
+      "output_gate_closed_at": 46.02 if success else None,
+      "disarm_at": 55.0 if success else None,
+      "phase_times": phase_times if success else {"PREFLIGHT": {"status": "reached", "start": 1.0, "end": 2.0}},
+      "metrics": metrics if success else {"final_armed": False, "nan_or_inf_count": 0},
+  }
+  tracking = {
+      "horizontal_rms_error_m": 0.069,
+      "horizontal_max_error_m": 0.16,
+      "height_mean_error_m": 0.05,
+      "height_rms_error_m": 0.064,
+      "position_3d_rms_error_m": 0.094,
+      "velocity_rms_error_mps": 0.078,
+      "input_quality": {"total_nan_or_inf_values": 0},
+  }
+  write_text(run_dir / "summary.json", json.dumps(summary))
+  write_text(run_dir / "tracking_metrics.json", json.dumps(tracking))
+  if success:
+    write_text(run_dir / "dynamic_flight_trajectory.log",
+               "[INFO] generated x id=22 points=1 topic=/uav/trajectory\n"
+               "[INFO] publish_once_ready trajectory_id=22 subscriber_count=1 "
+               "wait_sec=0.180876 planned_publish_count=3 header_stamp=9.5\n"
+               "[INFO] publish_once_message trajectory_id=22 publish_index=1 "
+               "publish_wall_time=8.1 subscriber_count=1 header_stamp=9.5\n"
+               "[INFO] publish_once_message trajectory_id=22 publish_index=2 "
+               "publish_wall_time=8.2 subscriber_count=1 header_stamp=9.5\n"
+               "[INFO] publish_once_message trajectory_id=22 publish_index=3 "
+               "publish_wall_time=8.3 subscriber_count=1 header_stamp=9.5\n"
+               "[INFO] publish_once_result exit_reason=published trajectory_id=22 "
+               "subscriber_count=1 wait_sec=0.180876 publish_count=3\n")
+    write_text(run_dir / "m0_c5b1_project_nodes.log",
+               "[INFO] Queued pending trajectory active_id=11 pending_id=22 planned_switch=9.5\n"
+               "[INFO] Promoted pending trajectory id=22 planned_switch=9.5 "
+               "actual_switch=9.5178 position_jump=0.028456 velocity_jump=0.000000 "
+               "acceleration_jump=0.000000\n")
+  else:
+    write_text(run_dir / "dynamic_flight_trajectory.log", "")
+    write_text(run_dir / "m0_c5b1_project_nodes.log", "")
+  write_text(run_dir / "rosbag.log", "[INFO] Recording to 'm0_c5b1.bag'.\n")
+  write_text(run_dir / "m0_c5b1.bag", "do not overwrite")
+  return run_dir
 
 
 class M0C5B1ProtocolTest(unittest.TestCase):
@@ -349,6 +471,111 @@ class M0C5B1ProtocolTest(unittest.TestCase):
         if call.get("service") == "arming" and call.get("value") is False
     ]
     self.assertEqual(forced_disarm_calls, [])
+
+  def test_materializer_complete_success_generates_five_json_files(self):
+    run_dir = make_materializer_run(True)
+    result = materializer.materialize_run_dir(run_dir)
+    self.assertEqual(set(result["written"]), materializer.DERIVED_FILES)
+    for name in materializer.DERIVED_FILES:
+      payload = json.loads((run_dir / name).read_text(encoding="utf-8"))
+      self.assertEqual(payload["schema_version"], 1)
+      self.assertTrue(payload["generated_offline"])
+      self.assertEqual(payload["experiment_id"], "run_20260802_162751")
+
+  def test_materializer_delivery_fields_for_success(self):
+    run_dir = make_materializer_run(True)
+    materializer.materialize_run_dir(run_dir)
+    delivery = json.loads((run_dir / "delivery_diagnostics.json").read_text(encoding="utf-8"))
+    self.assertEqual(delivery["trajectory_id"], 22)
+    self.assertEqual(delivery["publish_repeat_count"], 3)
+    self.assertEqual(delivery["publisher_exit_code"], 0)
+    self.assertFalse(delivery["sigsegv"])
+    self.assertTrue(delivery["delivery_passed"])
+
+  def test_materializer_handoff_fields_for_success(self):
+    run_dir = make_materializer_run(True)
+    materializer.materialize_run_dir(run_dir)
+    handoff = json.loads((run_dir / "handoff_metrics.json").read_text(encoding="utf-8"))
+    self.assertEqual(handoff["switch_count"], 1)
+    self.assertAlmostEqual(handoff["switch_timing_error_sec"], 0.0178)
+    self.assertAlmostEqual(handoff["position_jump_m"], 0.028456)
+    self.assertTrue(handoff["handoff_passed"])
+
+  def test_materializer_phase_and_landing_outputs(self):
+    run_dir = make_materializer_run(True)
+    materializer.materialize_run_dir(run_dir)
+    phase = json.loads((run_dir / "phase_metrics.json").read_text(encoding="utf-8"))
+    lifecycle = json.loads((run_dir / "landing_lifecycle_metrics.json").read_text(encoding="utf-8"))
+    self.assertIn("PENDING_HANDOFF", phase["phases"])
+    self.assertEqual(phase["performance_phases"], materializer.PERFORMANCE_PHASES)
+    self.assertGreaterEqual(lifecycle["reserve_remaining_at_land_request_sec"], 30.0)
+    self.assertLessEqual(lifecycle["land_confirm_to_output_gate_close_sec"], 0.5)
+    self.assertTrue(lifecycle["lifecycle_passed"])
+
+  def test_materializer_recovery_not_triggered_file(self):
+    run_dir = make_materializer_run(True)
+    materializer.materialize_run_dir(run_dir)
+    recovery = json.loads((run_dir / "recovery_metrics.json").read_text(encoding="utf-8"))
+    self.assertFalse(recovery["recovery_triggered"])
+    self.assertFalse(recovery["forced_disarm_called"])
+    self.assertTrue(recovery["final_disarm_confirmed"])
+
+  def test_materializer_early_failure_generates_applicable_files(self):
+    run_dir = make_materializer_run(False)
+    result = materializer.materialize_run_dir(run_dir)
+    self.assertIn("delivery_diagnostics.json", result["written"])
+    self.assertIn("recovery_metrics.json", result["written"])
+    handoff = json.loads((run_dir / "handoff_metrics.json").read_text(encoding="utf-8"))
+    self.assertEqual(handoff["switch_count"], 0)
+    self.assertFalse(handoff["handoff_passed"])
+
+  def test_materializer_repeat_is_idempotent(self):
+    run_dir = make_materializer_run(True)
+    materializer.materialize_run_dir(run_dir)
+    before = {
+        name: (run_dir / name).read_text(encoding="utf-8")
+        for name in materializer.DERIVED_FILES
+    }
+    result = materializer.materialize_run_dir(run_dir)
+    self.assertEqual(set(result["unchanged"]), materializer.DERIVED_FILES)
+    after = {
+        name: (run_dir / name).read_text(encoding="utf-8")
+        for name in materializer.DERIVED_FILES
+    }
+    self.assertEqual(before, after)
+
+  def test_materializer_conflicting_file_refuses_without_overwrite(self):
+    run_dir = make_materializer_run(True)
+    write_text(run_dir / "delivery_diagnostics.json", "{}\n")
+    with self.assertRaises(FileExistsError):
+      materializer.materialize_run_dir(run_dir)
+
+  def test_materializer_overwrite_derived_does_not_touch_bag(self):
+    run_dir = make_materializer_run(True)
+    bag_before = (run_dir / "m0_c5b1.bag").read_text(encoding="utf-8")
+    write_text(run_dir / "delivery_diagnostics.json", "{}\n")
+    materializer.materialize_run_dir(run_dir, overwrite_derived_only=True)
+    self.assertEqual((run_dir / "m0_c5b1.bag").read_text(encoding="utf-8"), bag_before)
+
+  def test_materializer_non_finite_rejected(self):
+    run_dir = make_materializer_run(True)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    summary["metrics"]["setpoint_average_rate_hz"] = float("nan")
+    write_text(run_dir / "summary.json", json.dumps(summary, allow_nan=True))
+    with self.assertRaises(ValueError):
+      materializer.materialize_run_dir(run_dir)
+
+  def test_materializer_consistency_detects_trajectory_id_mismatch(self):
+    run_dir = make_materializer_run(True)
+    text = (run_dir / "m0_c5b1_project_nodes.log").read_text(encoding="utf-8")
+    write_text(run_dir / "m0_c5b1_project_nodes.log", text.replace("pending_id=22", "pending_id=23"))
+    with self.assertRaises(ValueError):
+      materializer.materialize_run_dir(run_dir)
+
+  def test_materializer_is_offline_only(self):
+    source = MATERIALIZER_PATH.read_text(encoding="utf-8")
+    for forbidden in ["rospy", "roslaunch", "set_mode", "arming"]:
+      self.assertNotIn(forbidden, source)
 
 
 if __name__ == "__main__":

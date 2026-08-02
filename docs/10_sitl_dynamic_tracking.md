@@ -505,6 +505,120 @@ D2A does not change the M0-C5B1 status: the generator crash and abort recovery
 fixes are ready for commit, but M0-C5B1 still requires a new final PX4 SITL
 line-tracking flight revalidation under explicit one-time authorization.
 
+## Final Retry Acceptance
+
+M0-C5B1-FINAL-RETRY is preserved as:
+
+```text
+/tmp/uav_m0_c5b1/run_20260802_162751
+```
+
+This was a PX4 v1.14.3 SITL-only run using Gazebo Classic headless and MAVROS
+UDP `udp://:14540@127.0.0.1:14557`. It did not use real flight hardware, did
+not use `serial://`, and did not use `/dev/tty*`. PX4 was the SITL executable
+under `build/px4_sitl_default/bin/px4` at commit
+`1dacb4cdef2d7145754fc788fa8dc482eed74b40`.
+
+The run completed:
+
+```text
+ground hold
+-> setpoint prestream
+-> OFFBOARD confirmation
+-> arming confirmation
+-> reliable dynamic trajectory delivery
+-> pending handoff
+-> 8 s climb
+-> 2 s climb hold
+-> x+1 m
+-> x-1 m
+-> return center
+-> 10 s CENTER_HOLD
+-> LANDING_PREP reserve
+-> AUTO.LAND confirmation
+-> output gate close after AUTO.LAND
+-> PX4 automatic disarm
+-> at least 2 s post-disarm bag recording
+```
+
+Final measured acceptance values:
+
+```text
+flight trajectory ID: 2197811487
+publisher subscriber wait: 0.180876 s
+publisher repeat count: 3
+publisher exit code: 0
+handoff timing error: 0.017774 s
+handoff position jump: 0.028456 m
+handoff velocity jump: 0.000000 m/s
+handoff acceleration jump: 0.000000 m/s^2
+setpoint average rate: 30.000249 Hz
+maximum setpoint gap before landing request: 0.034317 s
+target coverage: 1.0
+actual coverage: 1.0
+horizontal RMS error: 0.069333 m
+maximum horizontal error: 0.165355 m
+horizontal-phase height RMS error: 0.064334 m
+center endpoint error: 0.060949 m
+velocity RMS error: 0.077820 m/s
+maximum actual speed: 0.759644 m/s
+maximum actual acceleration: 0.527304 m/s^2
+adapter FAULT count: 0
+unexpected OFFBOARD exit count: 0
+NaN/Inf count: 0
+reserve remaining at AUTO.LAND request: 59.928879 s
+reserve remaining at AUTO.LAND confirmation: 58.924977 s
+AUTO.LAND confirmation to output gate close: 0.010112 s
+AUTO.LAND to disarm: 9.076360 s
+post-disarm bag recording evidence: 2.002717 s
+final armed: false
+```
+
+M0-C5B1-D3 is a non-flight offline artifact materialization pass for this same
+successful run. It did not start PX4, Gazebo, MAVROS, OFFBOARD, arming, real
+`AUTO.LAND`, or any flight component. It did not modify the original bag,
+logs, `summary.json`, or `tracking_metrics.json`; their SHA256 values remained
+unchanged before and after materialization.
+
+The finalized run directory contains these independent JSON products:
+
+```text
+summary.json
+tracking_metrics.json
+delivery_diagnostics.json
+handoff_metrics.json
+phase_metrics.json
+landing_lifecycle_metrics.json
+recovery_metrics.json
+```
+
+Each derived JSON uses `schema_version=1`, records
+`experiment_id=run_20260802_162751`, records the source files used, and marks
+`generated_offline=true`. Some values that were not explicitly recorded by the
+flight script, such as a separate touchdown event and the exact rosbag stop
+timestamp, are represented as unavailable fields rather than guessed.
+
+The cross-file consistency check requires matching experiment IDs and
+trajectory IDs, monotonic phase times, AUTO.LAND confirmation before output
+gate close, disarm after AUTO.LAND confirmation, post-disarm recording of at
+least 2 seconds, matching final armed state, matching adapter FAULT count,
+matching NaN/Inf count, and tracking aggregate consistency. Numeric comparisons
+use exact equality for copied values and a `1e-9` tolerance for floating-point
+tracking aggregate comparisons.
+
+Final M0-C5B1 status:
+
+```text
+flight behavior: pass
+dynamic trajectory delivery: pass
+pending handoff: pass
+line tracking performance: pass
+landing reserve lifecycle: pass
+automatic landing and disarm: pass
+data artifact specification: pass
+M0-C5B1 overall: pass
+```
+
 ## First-Run Acceptance
 
 The first M0-C5B1 line tracking run is accepted only if:

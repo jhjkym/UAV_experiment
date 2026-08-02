@@ -968,6 +968,20 @@ class Experiment:
         json.dumps(recovery or self.abort_recovery, indent=2, sort_keys=True), encoding="utf-8")
     (self.run_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    self.materialize_derived_artifacts()
+
+  def materialize_derived_artifacts(self) -> None:
+    try:
+      output = self.run_cmd(
+          f"/usr/bin/python3 scripts/analysis/materialize_m0_c5b1_artifacts.py "
+          f"{self.run_dir} --overwrite-derived-only",
+          REPO_DIR,
+          timeout=20.0,
+      )
+      if output:
+        print(output, flush=True)
+    except Exception as exc:
+      print(f"derived artifact materialization failed: {exc}", file=sys.stderr, flush=True)
 
   def recover_after_failure(self, original_error: str) -> Dict[str, object]:
     if self.abort_reason is None:
@@ -1384,6 +1398,7 @@ class Experiment:
         "metrics": metrics,
     }
     (self.run_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    self.materialize_derived_artifacts()
     print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
     return summary
 

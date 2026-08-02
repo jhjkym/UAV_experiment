@@ -4,16 +4,16 @@ ROS 1 Noetic catkin workspace for the thesis project:
 
 `不确定动静态混合环境下四旋翼无人机感知、规划与安全控制方法研究`
 
-This repository is currently in M0-C4: PX4 SITL-only manually authorized
-OFFBOARD hover validation.
+This repository is currently through M0-C5B1: PX4 SITL-only manually
+authorized smooth line tracking validation.
 
 Current scope:
 - WSL 2 Ubuntu 20.04 development environment.
 - ROS 1 Noetic.
 - System Python 3.8 at `/usr/bin/python3`.
 - MAVROS and Gazebo Classic 11 are installed in the development environment.
-- No flight controller, motors, real sensors, Jetson target, or PX4 SITL is
-  connected by this stage.
+- No flight controller, motors, real sensors, or Jetson target has been audited
+  or connected by this stage. Flight validation to date is PX4 SITL-only.
 
 M0-B provides:
 - Catkin workspace skeleton.
@@ -69,6 +69,18 @@ the M0-C5A dynamic trajectory generator, records outputs under
 two-stage protocol: prestream/OFFBOARD/arming on a fixed ground-hold trajectory,
 then dynamic flight trajectory publication only after `armed=true`.
 
+M0-C5B1 is accepted by the final SITL retry in
+`/tmp/uav_m0_c5b1/run_20260802_162751`. The run completed dynamic trajectory
+delivery, pending handoff, 8 second climb, three smooth 1 m line segments,
+10 second center hold, landing reserve, `AUTO.LAND`, PX4 automatic disarm, and
+post-disarm bag recording. The final metrics met the line tracking gates:
+horizontal RMS `0.069 m`, maximum horizontal error `0.165 m`, height RMS
+`0.064 m`, adapter FAULT count `0`, NaN/Inf count `0`, and final
+`armed=false`. Derived JSON artifacts for delivery, handoff, phase metrics,
+landing lifecycle, and recovery are materialized offline from the `/tmp` run
+data and are not tracked by Git. Circle and figure-eight SITL tracking have not
+started.
+
 Recommended build:
 ```bash
 source scripts/env/ros_noetic_wsl.bash
@@ -80,9 +92,9 @@ catkin_test_results build
 ```
 
 Normal development and test launches do not provide flight capability and do
-not publish real MAVROS control setpoints. M0-C4 flight validation is a separate
-PX4 SITL-only experiment path guarded by `UAV_ALLOW_SITL_FLIGHT=YES`; it must
-not be used with real flight hardware.
+not publish real MAVROS control setpoints. M0-C4 and M0-C5B1 flight validation
+are separate PX4 SITL-only experiment paths guarded by
+`UAV_ALLOW_SITL_FLIGHT=YES`; they must not be used with real flight hardware.
 
 M0-C1 does not clone or vendor PX4-Autopilot into this repository. PX4 should be
 kept as external source, for example `/home/tom/third_party/PX4-Autopilot`.
